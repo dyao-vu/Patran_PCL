@@ -1,0 +1,49 @@
+3/16/2016
+
+Tasks to Complete: Patran_Model.pcl
+
+1. Complete the parsing to support all the constructs in:
+https://drive.google.com/open?id=0B_LQnE5DHROETkt0RTlJN0JVZFU
+https://drive.google.com/open?id=0B_LQnE5DHROETFhVcVowMWY0MFU
+
+Note: Some of the keywords changes.  e.g. Composite_2D_Layup change to Material_Layup
+
+2. Create a function to log the contents of the im-memory data structures
+
+3. Create a funcdtion to check the in-memory data structures.  For example, in the following:
+
+Solid
+	ID = 2
+	Element_Type = TETRA8
+	Material_ID = 1
+	Mesh_Parameters_ID = 1
+
+There must be a 
+Material
+	ID = 1
+	Tropic_Type = ISOTROPIC
+	Name = steel_stainless_321
+	Description = stainless steel 321
+	Youngs_Modulus = 1.99941E8
+	Poissons_Ratio = .21
+	Density = 7.82701E-6
+	Therm_Expan_Coef = 1.11E-5	
+
+with a ID = 1
+In other words is there is a reference to another entity, that referenced entity must exists.
+
+4. Read parsolid model  // There is already code examples for this.  Robert will provide the code examples.
+5. Create Material in Patran // Robert will provide examples
+6. Create Property Cards in Patran  // Robert will provide examples
+7. Mesh the model in Patran // Robert will provide examples
+8. Apply constraints // Robert will provide examples
+9. Apply loads // Robert will provide examples
+10. Submit models to solver // Robert will provide examples	
+
+
+Notes: 
+1) Only two modes are supported:  a) Solid models (i.e. Tetra elements b) Surface model (i.e. plate elements (CQuad))
+The two modes cannot be combined for now. Either all solids or all plate elements.  For now, the error checking 
+should verify that they are not combined. 
+
+

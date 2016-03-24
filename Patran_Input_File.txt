@@ -1,0 +1,206 @@
+# Don't include quotes around value files with spaces. Examples follow:
+#	WRONG
+#		Name = "low_alloy steel a515 gr70"
+#	CORRECT
+#		Name = low_alloy steel a515 gr70	
+# Only include quotes where the quotes are intended.
+#	CORRECT
+#		C:\"Program Files"
+
+# The order of this file does not matter. 
+
+Analysis
+	ID = 1
+	# Get Configuration_ID from CADAssembly.xml <Assembly ConfigurationID= 78e...
+	Configuration_ID = 78eef9b4-5047-44d7-b810-d4c860261c23|1  
+	Date = 12/17/2015
+	Source_Model = blade.asm
+	Type = 101   # 101 - Structural, 103 Modal
+	Solver = NASTRAN
+	Instructions = MESH_ONLY
+
+SubCase
+	ID = 1
+	Constraint_ID = 259
+	Load_ID = 559	
+
+Files
+	Patran_Model_Name = support_plates_fea
+	Patran_Model_Dir = .\
+	Geometry_File_Name = support_plates_fea.x_t
+	Geometry_File_Dir = .\
+	Geometry_File_Type = Parasolid
+
+Material
+	ID = 1
+	Tropic_Type = ISOTROPIC
+	Name = steel_stainless_321
+	Description = stainless steel 321
+	Youngs_Modulus = 1.99941E8
+	Poissons_Ratio = .21
+	Density = 7.82701E-6
+	Therm_Expan_Coef = 1.11E-5	
+	
+Mesh_Parameters
+	ID = 1
+	Max_Global_Length = .1
+	Max_Curv_Delta_Div_Edge_Len = .1
+	Ratio_Min_Edge_To_Max_Edge =  .2
+	Match_Face_Proximity_Tol = .05
+
+
+
+Material
+	ID = 2
+	Tropic_Type = ISOTROPIC
+	Name = low_alloy steel a515 gr70
+	Description = low_alloy steel a515 gr70
+	Youngs_Modulus = 1.99942E8
+	Poissons_Ratio = .22
+	Density = 7.82702E-6
+	Therm_Expan_Coef = 1.12E-5
+
+Material
+	ID = 3
+	Tropic_Type = ISOTROPIC
+	Name = steel_med_carbon_1141_hot_roll
+	Description = med carbon steel 1141 hot roll
+	Youngs_Modulus = 1.99943E8
+	Poissons_Ratio = .23
+	Density = 7.82703E-6
+	Therm_Expan_Coef = 1.13E-5
+
+Material
+	ID = 4
+	Tropic_Type = ISOTROPIC
+	Name = steel_low_carbon_1006_hot_roll
+	Description = low carbon steel 1006 hot roll
+	Youngs_Modulus = 1.99944E8
+	Poissons_Ratio = .24
+	Density = 7.82704E-6
+	Therm_Expan_Coef = 1.14E-5
+
+Material
+	ID = 5
+	Tropic_Type = ISOTROPIC	
+	Name = steel_filler_weld_070ksi
+	Description = filler weld steel 070ksi
+	Youngs_Modulus = 1.99945E8
+	Poissons_Ratio = .25
+	Density = 7.82705E-6
+	Therm_Expan_Coef = 1.15E-5
+
+Solid
+	ID = 1
+	Element_Type = TETRA8
+	Material_ID = 1
+	Mesh_Parameters_ID = 1
+Solid
+	ID = 2
+	Element_Type = TETRA8
+	Material_ID = 1
+	Mesh_Parameters_ID = 1
+Solid
+	ID = 3
+	Element_Type = TETRA8
+	Material_ID = 2
+	Mesh_Parameters_ID = 1
+Solid
+	ID = 4
+	Element_Type = TETRA8
+	Material_ID = 3
+	Mesh_Parameters_ID = 1
+Solid
+	ID = 5
+	Element_Type = TETRA8
+	Material_ID = 4
+	Mesh_Parameters_ID = 1
+
+Point
+	ID = 1
+	x_Cord = 1.2
+	y_Cord = 2.1
+	z_Cord = 3.3
+
+Point
+	ID = 2
+	x_Cord = 4.5
+	y_Cord = 6.9
+	z_Cord = 2.5
+
+Geometry
+	ID = 1
+	Type = FACE     # Only support FACE for now.  Later other types will be supported
+	Point_ID = 1    # If more than one point, would be Point_ID = 1,2,3,4
+
+Geometry
+	ID = 2
+	Type = FACE     # Only support FACE for now.  Later other types will be supported
+	Point_ID = 2  
+
+Displacement
+	ID = 1
+	# Specify either the *_State values or the *_Val values but not both.
+	# If a field is not specified, it would be omitted from this file
+	# If *_STATE are specified, at least one of the following must be FIXED. 
+	# There must be at least one of x, y, z.  A missing value is assumed to be FREE
+	x_Disp_State = FIXED  
+	y_Disp_State = FIXED
+	z_Disp_State = FIXED
+	x_Rot_State = FIXED  
+	y_Rot_State = FIXED
+	z_Rot_State = FIXED	
+	# The displacement fields are mutually exclusive with the FIXED/FREE fields. One would exist but not the other
+	# If  *_Val fields are used, there must be at least on *_Val (e.g.  x_Disp_Val ).  Missing fields are assumed to be zero. 
+	x_Disp_Val = 1.0
+	y_Disp_Val = 2.0
+	z_Disp_Val = 3.0	
+	x_Rot_Val = 4.0
+	y_Rot_Val = 5.0
+	z_Rot_Val = 6.0		
+	
+
+#  Don't Implement Pin yet,  might just need to indicate a surface
+#Pin
+#	ID = 1
+#	Axis_Start_Point_ID = 1
+#	Axis_End_Point_ID = 2	
+#	Axial_Rotation_State = Free
+#	Axial_Disp_State = Fixed	
+	
+#  Don't Implement Ball yet,  might just need to indicate a surface
+#Ball
+# .
+# .
+# .
+
+	
+Constraint
+	ID = 1
+	Type = DISPLACEMENT
+	SubCase_ID = 1
+	Geometry_ID = 1
+	# if Type == DISPLACEMENT then only the Displacement_ID would be present
+	Displacement_ID = 1
+	# if Type == PIN then only the Pin_ID would be present	
+	Pin_ID = 0
+	# if Type == BALL then only the Ball_ID would be present	
+	Ball_ID = 0
+	
+Load_Value
+	ID = 1
+	# Scalar_Value or at least one x_Value, y_Value, z_Value must exist. If Value exists 
+	# x_Value, y_Value, z_Value cannot exist.  Vice versa is also true.
+	Scalar_Value = 3203.03
+	# A omitted value (e.g. z_Value) would be assumed to be zero. 
+	x_Value = 392.0
+	y_Value = 3l3l3.0
+	z_Value = 500000.0
+
+Load
+	ID = 1
+	Type = PRESSURE
+	SubCase_ID = 1
+	Geometry_ID = 2
+	Load_Value_ID = 1
+	

@@ -1,0 +1,3097 @@
+﻿#	Revision History
+#	Date		Developer 	Revision
+#	3/15/2016	R. Owens	Most of the Parsing completed
+#
+#	*************************
+#   How to Run This Program
+#	*************************
+#	This pcl file is submitted (i.e. run by Patran) via a command such as:
+#		patran -b -graphics -sfp  Patran_Model.ses -stdout Patran_Model_pcl.log
+#
+#   ***********
+#	Description
+#	***********
+#	The purpose of this pcl script is:
+#		1. 	Create a Patran DB
+#		2.	Import a Parasolid model, which could consist of solids and/or surfaces
+#		3.	Create Materials
+#		4.	Create Properties
+#		5.  Assign properties to surfaces/solids  		// Note - Assigned to geometry not FEA elements
+#		6.  Assign loads and constraints to surfaces  	// Note - Assigned to geometry not FEA elements
+#		8.	Assign glue to dissimilar elements			// This is a future capability, not the first release
+#		9.  Mesh the model with plates (CQUAD4 or 8) or solid (TETRA 4 or 10) elements
+#		10.	Optionally, submit to solver			
+#
+#	Types of materials supported:
+#		1. Isotropic
+#		2. 2D Orthotropic
+#
+#	Composite Support
+#		1. 2D Ply Stackups // CQUAD elements
+#		
+#	Composite Support in the Future (planned but not implemented)
+#		1. Solid composite elements
+#
+#   **************
+#	Pre-Conditions
+#	**************
+#	1. Patran 2014 must be installed on the machine running this program and a Patran license must be available
+#
+#	2. This program does no unit conversions.  It is the caller's responsibility
+#	   to use a set of units (pressure (Young's Modulus), density, force, dimensions)
+#	   that will yield the desired output (e.g. stress, displacement) units.
+#
+#   ***************
+#	Post-Conditions
+#   ***************
+#	Note - _SUCCEEDED.TXT is deleted at the beginning of the run if it exists.
+#	1. If an error occurred, _FAILED.TXT will be created of it does not exist and appended to if it exists.  This file will be 
+#	   in the directory from which this program was run.
+#	2. If no errors occurred, 
+#			_SUCCEEDED.TXT will be created.  This file will be in the directory from which this program was run.
+#			A Patran model will be created and saved.
+#	3. PatranModel_Application.log written.  This shows all the operations that were completed by this program.
+
+#	******
+#	Errors
+#	******
+#
+#	****************************************
+#	Supporting Information
+#	****************************************#
+#	This program creates a separate PSOLID card for each solid (Solid 1, Solid 2, Solid 3…) .  Solid 1 maps to 
+#	PSOLID 1, Solid 2 to PSOLID 2, Solid 3 to PSOLID 3…  Since the post-processing program 
+#	knows the mapping between PSOLIDs and component instance IDs, the stresses can be retrieve from the solver 
+#	results data base based on PSOLID IDs and thus ultimately based on component instance IDs.   
+#
+#	For inseparable assemblies (e.g. parts welded together), it is the responsibility of the caller of this 
+#	program to track that a group of solids that defines an inseparable assembly.  Then, in post-processing, the 
+#	metrics(e.g. maximum stress, factor-of-safety...) of the group of parts should be returned.
+#
+#	*******************
+# 	Composite 
+#   *******************
+#	Composites structures have characteristics similar to those of inseparable assemblies.  For a single composite structure, 
+#   the surface model would actually be composed of surfaces that were split along boundaries that have different ply build-ups.  
+#   Each of these split surfaces would have a separate PComp card.  It is the responsibility of the caller of this program to track 
+#   the PComp cards belonging to a single component and return via post-processing the results for the entire component.    
+#
+# in_PatranInstall_Dir   e.g. "C:\MSC.Software\Patran_x64\20122"
+
+# in_Working_Dir  e.g. 					"." 
+#										"E:\Temp\scratch\2015_07_13_Patran_PCL_Code\Analysis\Mesher\Patran", both work
+# in_ParasolidFile_DirAndFileName  e.g. "E:\Temp\scratch\2015_07_13_Patran_PCL_Code\Analysis\Mesher\Patran\support_plates_fea.x_t"
+#										".\support_plates_fea.x_t"
+#										"support_plates_fea.x_t"
+#
+#	###############################
+#	Mesh Control Typical Parameters
+#	###############################
+#	Parameter							Type		Typical Value	Notes
+#	------------------------------		----------	-------------	------------
+#	meshMaxGlobalEdgeLength				Length		.1				Depends on the part size
+#	meshMaxCurvDelta_Div_EdgeLen		Ratio		.1				Does NOT depend on part size
+#	meshRatio_MinEdge_TO_MaxEdge		Ratio		.2				Does NOT depend on part size, typical value .2. This says the 
+#																	minimum edge must be no less that 20% of the maximum edge			
+#	meshMatchFaceProximityTol			Length		.005			Depends on the part size
+
+###############################################################################
+FUNCTION 	formatErrorMessage( in_Error_Level, in_Function, in_Msg )
+	STRING in_Error_Level[]
+	STRING in_Function[]	
+	STRING in_Msg[]
+		
+	STRING msg[1024]
+
+	msg = in_Error_Level // ", Function: " //  in_Function // ", Message: " //in_Msg
+	
+	IF ( str_length(msg) > 256 ) THEN msg = substr(msg,1, 256) 
+
+    return msg
+END FUNCTION 
+###############################################################################
+FUNCTION addErrorMessage( in_Message, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+					
+	STRING 	in_Message[]					
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()								
+										
+	if ( (in_out_ErrorMessages_current + 1) <= in_ErrorMessages_maxCount ) THEN 
+		in_out_ErrorMessages_current += 1
+		in_out_errorMessages(in_out_ErrorMessages_current) = in_Message
+	END IF
+											
+END FUNCTION
+
+
+CLASS PatranModel
+
+						###############################
+						# Constants for Error Messages
+						###############################
+	CLASSWIDE STRING 	c_ERROR[32],							@
+						c_WARNING[32],							@
+						c_INFORMATION[32]
+						
+						###############################################
+						# Constants Defining Sections in the Input File
+						###############################################
+	CLASSWIDE STRING 	c_ANALYSIS[32], 						@
+						c_FILES[32], 							@
+						c_SUBCASE[32], 							@
+						c_MESH_PARAMETERS[32], 					@
+						c_MATERIAL[32], 						@
+						c_SOLID[32],							@
+						c_POINT[32],							@
+						c_GEOMETRY[32],							@
+						c_DISPLACEMENT[32],						@
+						c_PIN[32],								@
+						c_CONSTRAINT[32],						@
+						c_LOAD_VALUE[32],                       @
+						c_LOAD[32]
+						
+			
+						###################################################################
+						# Constants Defining Names for Named-Value Pairs in the Input File
+						###################################################################
+	CLASSWIDE STRING 	c_ID[32],								@
+						c_DATE[32],								@	
+						c_CONFIGURATION_ID[32],					@
+						c_SOURCE_MODEL[32],						@
+						c_TYPE[32],								@
+						c_Element_Type[32],						@
+						c_NAME[32],								@
+						c_SOLVER[32],							@
+						c_DESCRIPTION[32],						@
+						c_CONSTRAINT_ID[32],					@
+						c_LOAD_ID[32],							@
+						c_INSTRUCTIONS[32],						@
+						c_PATRAN_MODEL_NAME[32],				@									
+						c_PATRAN_MODEL_DIR[32],					@
+						c_GEOMETRY_FILE_NAME[32],				@
+						c_GEOMETRY_FILE_DIR[32],				@
+						c_GEOMETRY_FILE_TYPE[32],				@		
+						c_MAX_GLOBAL_LENGTH[32],				@
+						c_MAX_CURV_DELTA_DIV_EDGE_LEN[32],		@							
+						c_RATIO_MIN_EDGE_TO_MAX_EDGE[32],		@
+						c_MATCH_FACE_PROXIMITY_TOL[32],			@	
+						c_MAT_TROPIC_TYPE[32],					@						
+						c_YOUNGS_MODULUS[32],					@
+						c_POISSONS_RATIO[32],					@
+						c_DENSITY[32],							@
+						c_THERM_EXPAN_COEF[32],					@							
+						c_MATERIAL_ID[32],						@						
+						c_MESH_PARAMETERS_ID[32],				@
+						c_X_Cord[32],							@
+						c_Y_Cord[32],							@
+						c_Z_Cord[32],							@
+						c_Point_ID[32],							@
+						c_SubCase_ID[32],						@
+						c_DISPLACEMENT_ID[32],					@
+						c_PIN_ID[32],							@
+						c_BALL_ID[32],							@
+						c_GEOMETRY_ID[32],						@
+						c_SCALAR_VALUE[32],						@
+						c_VALUE[32],							@
+						c_x_VALUE[32],							@
+						c_y_VALUE[32],							@
+						c_z_VALUE[32],							@
+						c_LOAD_VALUE_ID[32]
+						
+						###################################
+						# Constants Defining Value Contents
+						###################################					
+	CLASSWIDE STRING 	c_NASTRAN[32],							@
+						c_MESH_AND_SOLVE[32],					@
+						c_MESH_ONLY[32],						@		
+						c_FACE[32],								@
+						c_FIXED[32],							@
+						c_FREE[32],								@
+						c_CONSTRAINT_DISPLACEMENT[32],			@
+						c_CONSTRAINT_PIN[32],					@	
+						c_CONSTRAINT_BALL[32],					@					
+						c_PRESSURE_type[32],					@
+						c_PARASOLID[32],						@
+						c_MAT_ISOTROPIC[32],					@
+						c_MAT_ORTHOTROPIC[32],					@
+						c_MAT_ANSITROPIC[32],					@	
+						c_ELEMENT_TYPE_TETRA4[32],				@					
+						c_ELEMENT_TYPE_TETRA8[32],				@
+						c_ELEMENT_TYPE_CQUAD4[32],				@	
+						c_ELEMENT_TYPE_CQUAD8[32],				@
+						c_GEOMETRY_TYPE_FACE[32],				@
+						c_x_Disp_State[32],						@  
+						c_y_Disp_State[32],						@
+						c_z_Disp_State[32],						@
+						c_x_Rot_State[32],						@  
+						c_y_Rot_State[32],						@
+						c_z_Rot_State[32],						@					
+						c_x_Disp_Val[32],						@
+						c_y_Disp_Val[32],						@
+						c_z_Disp_Val[32],						@
+						c_x_Rot_Val[32],						@
+						c_y_Rot_Val[32],						@
+						c_z_Rot_Val[32]						
+						
+	CLASSWIDE INTEGER	ci_NASTRAN,								@
+						ci_MESH_AND_SOLVE,						@
+						ci_MESH_ONLY,							@
+						ci_PARASOLID,							@
+						ci_MAT_ISOTROPIC,						@
+						ci_MAT_ORTHOTROPIC,						@
+						ci_MAT_ANSITROPIC,						@
+						ci_ELEMENT_TYPE_TETRA4,					@					
+						ci_ELEMENT_TYPE_TETRA8,					@
+						ci_ELEMENT_TYPE_CQUAD4,					@	
+						ci_ELEMENT_TYPE_CQUAD8,					@							
+						ci_GEOMETRY_TYPE_FACE,					@
+						ci_FIXED,								@
+						ci_FREE,								@
+						ci_CONSTRAINT_DISPLACEMENT,				@
+						ci_CONSTRAINT_PIN,						@	
+						ci_CONSTRAINT_BALL	
+						
+						########################################
+						# Analysis (Should be only one of these)
+						########################################	
+						# ana_Count should always be one.  Capture the value for error checking
+	CLASSWIDE INTEGER	ana_Count,			@
+						ana_Count_temp
+	CLASSWIDE INTEGER	ana_ID(VIRTUAL)
+	CLASSWIDE STRING 	ana_Date[64](VIRTUAL), @
+						ana_Configuration_ID[256](VIRTUAL)
+						# ana_Type = 101, 103, 400
+	CLASSWIDE STRING	ana_Source_Model[128](VIRTUAL)				
+	CLASSWIDE INTEGER	ana_Type(VIRTUAL)
+						# ana_Solver = ci_NASTRAN, No other solvers currently supported
+	CLASSWIDE INTEGER 	ana_Solver(VIRTUAL)
+						# ana_Instructions = ci_MESH_AND_SOLVE or ci_MESH_ONLY
+	CLASSWIDE INTEGER	ana_Instructions(VIRTUAL)
+						
+						###########################
+						# Files (Should be only one of these)
+						###########################		
+						# file_Count should always be one.  Capture the value for error checking
+	CLASSWIDE INTEGER	file_Count,										@
+						file_Count_temp
+	CLASSWIDE STRING	file_Patran_Model_Name[256](VIRTUAL),			@
+						file_Patran_Model_Dir[512](VIRTUAL),			@
+						file_Geometry_File_Name[256](VIRTUAL),			@
+						file_Geometry_File_Dir[512](VIRTUAL)
+						# file_Geometry_File_Type = ci_PARSOLID, no other types supported
+	CLASSWIDE INTEGER	file_Geometry_File_Type(VIRTUAL)	
+
+						###########################################
+						#  SubCase (Should be only one of these)
+						###########################################		
+						# SubCase should always be one.  Capture the value for error checking
+	CLASSWIDE INTEGER	subcase_Count,									@
+						subcase_Count_temp,								@
+						subcase_ID(VIRTUAL),							@
+						subcase_Constraint_ID(VIRTUAL),					@
+						subcase_Load_ID(VIRTUAL)
+	
+						#################
+						# Mesh_Parameters
+						#################				
+	CLASSWIDE INTEGER	mesh_Params_Count,							@
+						mesh_Params_Count_temp,						@
+						mesh_params_ID(VIRTUAL)
+	CLASSWIDE REAL		mesh_Max_Global_Length(VIRTUAL),			@
+						mesh_Max_Curv_Delta_Div_Edge_Ln(VIRTUAL),	@
+						mesh_Ratio_Min_Edge_To_Max_Edge(VIRTUAL),	@
+						mesh_Match_Face_Proximity_Tol(VIRTUAL)
+						
+						#################
+						# Material
+						#################	
+	CLASSWIDE INTEGER	mat_Count,									@
+						mat_Count_temp,								@
+						mat_ID(VIRTUAL)
+	CLASSWIDE STRING	mat_Name[128](VIRTUAL)							
+	CLASSWIDE INTEGER	mat_Tropic_Type(VIRTUAL)
+	CLASSWIDE STRING	mat_Description[245](VIRTUAL)
+	CLASSWIDE REAL		mat_Youngs_Modulus(VIRTUAL),				@
+						mat_Poissons_Ratio(VIRTUAL),				@
+						mat_Density(VIRTUAL),						@
+						mat_Therm_Expan_Coef(VIRTUAL)
+
+						#################
+						# Solid
+						#################							
+	CLASSWIDE INTEGER	sol_Count,									@
+						sol_Count_temp,								@
+						sol_ID(VIRTUAL),							@
+						sol_Element_Type(VIRTUAL),					@
+						sol_Mat_ID(VIRTUAL),						@
+						sol_Mesh_Params_ID(VIRTUAL)				
+									
+									
+						#################
+						# Point
+						#################							
+	CLASSWIDE INTEGER	point_Count,								@
+						point_Count_temp,							@
+						point_ID(VIRTUAL)							
+	CLASSWIDE REAL		point_x(VIRTUAL),							@
+						point_y(VIRTUAL),							@
+						point_z(VIRTUAL)
+	
+	
+						#################
+						# Geometry
+						#################							
+	CLASSWIDE INTEGER	geometry_Count,								@
+						geometry_Count_temp,						@
+						geometry_ID(VIRTUAL),						@							
+						geometry_Type(VIRTUAL),						@			
+						geometry_Point_ID(VIRTUAL)
+									
+						#################
+						# Displacement
+						#################	
+	CLASSWIDE INTEGER	disp_Count,									@
+						disp_Count_temp,							@
+						disp_ID(VIRTUAL)		
+													
+	CLASSWIDE INTEGER	x_Disp_State(VIRTUAL),						@  
+						y_Disp_State(VIRTUAL),						@
+						z_Disp_State(VIRTUAL),						@
+						x_Rot_State(VIRTUAL),						@  
+						y_Rot_State(VIRTUAL),						@
+						z_Rot_State(VIRTUAL)
+						
+	CLASSWIDE LOGICAL	x_Disp_State_set(VIRTUAL),					@  
+						y_Disp_State_set(VIRTUAL),					@
+						z_Disp_State_set(VIRTUAL),					@
+						x_Rot_State_set(VIRTUAL),					@  
+						y_Rot_State_set(VIRTUAL),					@
+						z_Rot_State_set(VIRTUAL)						
+						
+	# The displacement fields are mutually exclusive with the FIXED/FREE fields. One would exist but not the other
+	CLASSWIDE REAL		x_Disp_Val(VIRTUAL),						@
+						y_Disp_Val(VIRTUAL),						@
+						z_Disp_Val(VIRTUAL),						@
+						x_Rot_Val(VIRTUAL),							@
+						y_Rot_Val(VIRTUAL),							@
+						z_Rot_Val(VIRTUAL)
+						
+	CLASSWIDE LOGICAL	x_Disp_Val_set(VIRTUAL),					@
+						y_Disp_Val_set(VIRTUAL),					@
+						z_Disp_Val_set(VIRTUAL),					@
+						x_Rot_Val_set(VIRTUAL),						@
+						y_Rot_Val_set(VIRTUAL),						@
+						z_Rot_Val_set(VIRTUAL)						
+
+						#################
+						# Pin,  Don't implement this yet, Not sure how this should work in Patran
+						# In deck-based FEA, a start and end point is given and a point on the radius.
+						# In Patran two surfaces (one for each half of the sphere) might be needed.
+						#################	
+	CLASSWIDE INTEGER	pin_Count,									@
+						pin_Count_temp,								@
+						pin_ID(VIRTUAL),							@
+						pin_Axis_Start_Point_ID(VIRTUAL),			@
+						pin_Axis_End_Point_ID(VIRTUAL)				
+	CLASSWIDE STRING	pin_Axial_Rot_State[32](VIRTUAL),			@	
+						pin_Axial_Disp_State[32](VIRTUAL)
+						
+						#################
+						# Ball,  Don't implement this yet, Not sure how this should work in Patran
+						# In deck-based FEA a center point and point on radius is used.  Maybe in Patran a 
+						# surface (or maybe two surface representing the sphere would be needed.
+						#################							
+						
+						#################
+						# Constraint
+						#################	
+	CLASSWIDE INTEGER	constraint_Count,							@
+						constraint_Count_temp,						@
+						constraint_ID(VIRTUAL),						@	
+						constraint_SubCase_ID(VIRTUAL)
+						# Only Displacement supported, PIN and Ball Supported in future							
+	CLASSWIDE INTEGER	constraint_Type(VIRTUAL),					@				
+						constraint_Geometry_ID(VIRTUAL)
+						# Only one of the following IDs (Displacement, Pin, or Ball) would exist depending on constraint_Type
+	CLASSWIDE INTEGER	constraint_Displacement_ID(VIRTUAL),		@
+						constraint_Pin_ID(VIRTUAL),					@
+						constraint_Ball_ID(VIRTUAL)
+	
+						#################
+						# Load_Value
+						#################	
+	CLASSWIDE INTEGER	load_Value_Count,							@
+						load_Value_Count_temp,						@
+						load_Value_ID(VIRTUAL)
+	CLASSWIDE REAL		load_value_Scalar(VIRTUAL),					@
+						load_Value_Value(VIRTUAL)					
+	CLASSWIDE LOGICAL	load_Value_Scalar_Set(VIRTUAL),				@
+						load_Value_Value_Set(VIRTUAL)
+	CLASSWIDE REAL		load_Value_x(VIRTUAL),						@
+						load_Value_y(VIRTUAL),						@
+						load_Value_z(VIRTUAL)
+	CLASSWIDE LOGICAL	load_Value_x_Set(VIRTUAL),					@
+						load_Value_y_Set(VIRTUAL),					@
+						load_Value_z_Set(VIRTUAL)
+								
+						#################
+						# Load
+						#################	
+	CLASSWIDE INTEGER	load_Count,									@
+						load_Count_temp,							@
+						load_ID(VIRTUAL),							@
+						load_SubCase_ID(VIRTUAL)					
+	CLASSWIDE STRING	load_Type[32](VIRTUAL)	
+	CLASSWIDE INTEGER	load_Geometry_ID(VIRTUAL),					@
+						load_Load_Value_ID(VIRTUAL)					
+								
+
+###############################################################################				
+FUNCTION  createModel( 	in_PatranInstall_Dir, 		@
+						in_Working_Dir,				@
+						in_FEAModelDefinitionFile,	@
+						in_Log_DirAndFileName )
+
+	STRING in_PatranInstall_Dir[]
+	STRING in_Working_Dir[]
+	STRING in_FEAModelDefinitionFile[]
+	STRING in_Log_DirAndFileName[]		
+	STRING  functionName[64] = "createModel"		
+	
+				
+	INTEGER returnStatus = 0
+	INTEGER errorMessages_maxCount = 100	
+	INTEGER errorMessages_current = 0	
+	STRING errorMessages[256](100)
+
+	INTEGER logFile = 0	
+	INTEGER i
+	
+	PatranModel.initializeConstants()	
+	
+	######################
+	# Delete Old Files
+	######################
+	IF (file_exists("_SUCCEEDED.TXT","" )) THEN
+		file_delete("_SUCCEEDED.TXT") 
+	End IF
+
+
+	IF (file_exists(in_Log_DirAndFileName,"" )) THEN
+		file_delete(in_Log_DirAndFileName) 
+	End IF
+	
+	
+	IF (in_log_DirAndFileName != "") THEN
+		# If the log file does not open properly, the messages will be written to the session log file (e.g. Patran_Model_Session.log)
+		# patran -b -graphics -sfp  Patran_Model.ses -stdout Patran_Model_log.txt
+		returnStatus = text_open( in_log_DirAndFileName, "NOW", 0, 0, logFile )		
+		IF ( returnStatus != 0 ) THEN 
+		     addErrorMessage( @
+				formatErrorMessage( c_WARNING, functionName, "Could not open log file: " // in_log_DirAndFileName // ", Logging to session log file"), @
+				errorMessages_maxCount, errorMessages_current, errorMessages) 
+			# c_WARNING non fatal, set returnStatus = 0 
+			returnStatus = 0  
+		END IF
+	END IF	
+	
+	text_write_string( logFile, "Date Time:       " // sys_date() // "  " // sys_time())
+	text_write_string( logFile, "MSC Application: " // sys_product()// " " // sys_release())
+	text_write_string ( logFile, "" )	
+	text_write_string( logFile, "in_PatranInstall_Dir:      " // in_PatranInstall_Dir)
+	text_write_string( logFile, "in_Working_Dir:            " // in_Working_Dir)
+	text_write_string( logFile, "in_FEAModelDefinitionFile: " // in_FEAModelDefinitionFile)
+	text_write_string( logFile, "in_Log_DirAndFileName:     " // in_Log_DirAndFileName)
+	text_write_string( logFile, "" )			
+	
+	returnStatus = PatranModel.readFEAModelDefinition( in_Working_Dir, 			@
+										in_FEAModelDefinitionFile,				@
+										logFile, 								@
+										errorMessages_maxCount,					@	
+										errorMessages_current,					@									
+										errorMessages )
+								
+	PatranModel.logInMemoryFEAModelDefinition(logFile)	
+	
+	WRITE ("errorMessages_maxCount errorMessages_current: " // str_from_integer(errorMessages_maxCount) // " " //  str_from_integer(errorMessages_current))
+	
+	IF ( returnStatus == 0 ) THEN
+		INTEGER succeededFile = 0
+		text_open( "_SUCCEEDED.TXT", "NOWA", 0, 0, succeededFile )	
+		text_write_string ( succeededFile, "Processing completed successfully" )			
+		text_write_string( succeededFile, "Date Time: " // sys_date() // "  " // sys_time())			
+		text_write_string( succeededFile, "Patran model created/ran successfully.")
+		text_close(succeededFile,"")		
+		text_write_string ( logFile, "" )					
+		text_write_string( logFile, "Patran model created/ran successfully, Date Time: " // sys_date() // "  " // sys_time())
+		
+	ELSE
+		INTEGER faildedFile = 0
+		
+		text_open( "_FAILED.TXT", "NOWA", 0, 0, faildedFile )		
+		FOR ( i = 1 TO errorMessages_current )
+			text_write( faildedFile, "%A%",returnStatus,0.0,errorMessages(i))
+		END FOR
+		text_close(faildedFile,"")	
+		
+		text_write_string ( logFile, "" )		
+		FOR ( i = 1 TO errorMessages_current )
+			text_write( logFile, "%A%",returnStatus,0.0,errorMessages(i))
+		END FOR
+
+		text_write_string( logFile, "Patran model creation FAILED, Date Time: " // sys_date() // "  " // sys_time())
+	END IF	
+
+	
+	text_close(logFile,"")	
+	
+	return returnStatus
+	
+END FUNCTION
+
+###############################################################################
+FUNCTION initializeConstants()
+	
+	###############################
+	# Constants for Error Messages
+	###############################	
+	c_ERROR = 						"ERROR"
+	c_WARNING = 					"WARN"
+	c_INFORMATION =					"INFO"
+	
+	###############################################
+	# Constants Defining Sections in the Input File
+	###############################################
+	c_ANALYSIS = 					"Analysis"
+	c_FILES = 						"Files"
+	C_SUBCASE =						"SubCase"
+	c_MESH_PARAMETERS = 			"Mesh_Parameters"
+	c_MATERIAL = 					"Material"
+	c_SOLID = 						"Solid"
+	c_POINT = 						"Point"	
+	c_GEOMETRY =					"Geometry"
+	c_DISPLACEMENT =				"Displacement"
+	c_PIN =							"Pin"
+	c_CONSTRAINT =					"Constraint"
+	c_LOAD_VALUE =					"Load_Value"
+	c_LOAD =						"Load"	
+	
+	###################################################################
+	# Constants Defining Names for Named-Value Pairs in the InputFile
+	###################################################################
+	c_ID = 							"ID"
+	c_DATE = 						"Date"
+	c_CONFIGURATION_ID	=			"Configuration_ID"
+	c_SOURCE_MODEL = 				"Source_Model"
+	c_TYPE = 						"Type"
+	c_Element_Type =				"Element_Type"	
+	c_NAME = 						"Name"
+	c_SOLVER =						"Solver"
+	c_DESCRIPTION = 				"Description"
+	c_CONSTRAINT_ID =				"Constraint_ID"
+	c_LOAD_ID =						"Load_ID"
+	c_INSTRUCTIONS = 				"Instructions"
+	c_PATRAN_MODEL_NAME = 			"Patran_Model_Name"
+	c_PATRAN_MODEL_DIR = 			"Patran_Model_Dir"
+	c_GEOMETRY_FILE_NAME = 			"Geometry_File_Name"
+	c_GEOMETRY_FILE_DIR = 			"Geometry_File_Dir"
+	c_GEOMETRY_FILE_TYPE = 			"Geometry_File_Type"
+	c_MAX_GLOBAL_LENGTH = 			"Max_Global_Length"
+	c_MAX_CURV_DELTA_DIV_EDGE_LEN = "Max_Curv_Delta_Div_Edge_Len"
+	c_RATIO_MIN_EDGE_TO_MAX_EDGE = 	"Ratio_Min_Edge_To_Max_Edge"
+	c_MATCH_FACE_PROXIMITY_TOL = 	"Match_Face_Proximity_Tol"
+	c_MAT_TROPIC_TYPE =				"Tropic_Type"
+	c_YOUNGS_MODULUS = 				"Youngs_Modulus"
+	c_POISSONS_RATIO = 				"Poissons_Ratio"
+	c_DENSITY = 					"Density"
+	c_THERM_EXPAN_COEF = 			"Therm_Expan_Coef"
+	c_MATERIAL_ID = 				"Material_ID"
+	c_MESH_PARAMETERS_ID = 			"Mesh_Parameters_ID"
+	c_X_Cord =						"x_Cord"
+	c_Y_Cord =						"y_Cord"
+	c_Z_Cord =						"z_Cord"
+	c_Point_ID =					"Point_ID"
+	c_SubCase_ID	= 				"SubCase_ID"
+	c_DISPLACEMENT_ID =			    "Displacement_ID"
+	c_PIN_ID =			    		"Pin_ID"	
+	c_BALL_ID =			    		"Ball_ID"
+	c_GEOMETRY_ID =					"Geometry_ID"
+	c_SCALAR_VALUE =				"Scalar_Value"
+	c_VALUE =						"Value"
+	c_x_VALUE =						"x_Value"
+	c_y_VALUE =						"y_Value"
+	c_z_VALUE =						"z_Value"
+	c_LOAD_VALUE_ID =				"Load_Value_ID"
+	
+	###################################
+	# Constants Defining Value Contents
+	###################################					
+	c_NASTRAN = 					"NASTRAN"
+	c_MESH_AND_SOLVE = 				"MESH_AND_SOLVE"
+	c_MESH_ONLY = 					"MESH_ONLY"		
+	c_FACE =						"FACE"
+	c_FIXED =						"FIXED"
+	c_FREE =						"FREE"
+	c_CONSTRAINT_DISPLACEMENT =		"DISPLACEMENT"
+	c_CONSTRAINT_PIN =				"PIN"	
+	c_CONSTRAINT_BALL =				"BALL"		
+	c_PRESSURE_type =				"PRESSURE"
+	c_PARASOLID =					"Parasolid"
+	c_MAT_ISOTROPIC =				"Isotropic"
+	c_MAT_ORTHOTROPIC =				"Orthotropic"
+	c_MAT_ANSITROPIC =				"Ansitropic "
+	c_ELEMENT_TYPE_TETRA4 =			"Tetra4"					
+	c_ELEMENT_TYPE_TETRA8 =			"Tetra8"
+	c_ELEMENT_TYPE_CQUAD4 =			"CQuad4"	
+	c_ELEMENT_TYPE_CQUAD8 =			"CQuad8"
+	c_GEOMETRY_TYPE_FACE =			"FACE"
+	c_x_Disp_State =				"x_Disp_State"  
+	c_y_Disp_State =				"y_Disp_State"
+	c_z_Disp_State =				"z_Disp_State"
+	c_x_Rot_State =					"x_Rot_State"
+	c_y_Rot_State =					"y_Rot_State"
+	c_z_Rot_State =					"z_Rot_State"
+	c_x_Disp_Val =					"x_Disp_Val"
+	c_y_Disp_Val =					"y_Disp_Val"
+	c_z_Disp_Val =					"z_Disp_Val"
+	c_x_Rot_Val =					"x_Rot_Val"
+	c_y_Rot_Val =					"y_Rot_Val"
+	c_z_Rot_Val =					"z_Rot_Val"		
+	
+	
+	
+	ci_NASTRAN = 					1
+	ci_MESH_AND_SOLVE =				1
+	ci_MESH_ONLY =					2		
+	ci_PARASOLID = 					1
+	ci_MAT_ISOTROPIC =				1
+	ci_MAT_ORTHOTROPIC = 			2
+	ci_MAT_ANSITROPIC = 			3	
+	ci_ELEMENT_TYPE_TETRA4	=		1						
+	ci_ELEMENT_TYPE_TETRA8 = 		2
+	ci_ELEMENT_TYPE_CQUAD4 = 		3	
+	ci_ELEMENT_TYPE_CQUAD8 = 		4	
+	ci_GEOMETRY_TYPE_FACE =			1
+	ci_FIXED =						1
+	ci_FREE	 =						2
+	ci_CONSTRAINT_DISPLACEMENT = 	1
+	ci_CONSTRAINT_PIN = 			2
+	ci_CONSTRAINT_BALL = 			3	
+	
+	###################################
+	# Initialize Array Counts to Zero
+	###################################		
+	ana_Count = 				0	
+	ana_Count_temp = 			0	
+	file_Count = 				0
+	file_Count_temp = 			0
+	subcase_Count = 			0
+	subcase_Count_temp = 		0
+	mesh_Params_Count = 		0
+	mesh_Params_Count_temp = 	0	
+	mat_Count = 				0
+	mat_Count_temp = 			0	
+	sol_Count = 				0
+	sol_Count_temp = 			0
+	point_Count = 				0
+	point_Count_temp = 			0	
+	geometry_Count = 			0
+	geometry_Count_temp = 		0		
+	disp_Count = 				0
+	disp_Count_temp = 			0
+	pin_Count = 				0
+	pin_Count_temp = 			0	
+	constraint_Count = 			0
+	constraint_Count_temp = 	0	
+	load_Value_Count =			0
+	load_Value_Count_temp = 	0
+	load_Count =				0
+	load_Count_temp = 			0
+	
+	return 0
+END FUNCTION
+###############################################################################
+FUNCTION solver_toStr ( in_Solver_ID )
+
+	INTEGER in_Solver_ID
+	
+	IF ( in_Solver_ID == ci_NASTRAN ) THEN
+		return c_NASTRAN
+	ELSE
+		return ""
+	END IF
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION solver_toInt ( in_Solver_string )
+
+	STRING in_Solver_string[]
+	
+	IF ( in_Solver_string == c_NASTRAN ) THEN
+		return ci_NASTRAN
+	ELSE
+		return -1
+	END IF
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION solver_validStrings()
+	# if more are added, the strings would be separated by spaces
+	return c_NASTRAN
+	
+END FUNCTION
+
+##############################################################################
+FUNCTION anaType_toStr ( in_anaType_ID )
+
+	INTEGER in_anaType_ID
+	
+	IF ( in_anaType_ID == 101 ) THEN
+		return "101"
+	ELSE
+		return ""
+	END IF
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION anaType_toInt ( in_anaType_string )
+
+	STRING in_anaType_string[]
+	
+	IF ( in_anaType_string == "101" ) THEN
+		return 101
+	ELSE
+		return -1
+	END IF
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION anaType_validStrings()
+	# if more are added, the strings would be separated by spaces
+	return "101"
+	
+END FUNCTION
+
+
+
+##############################################################################
+FUNCTION anaInstructions_toStr ( in_anaInstructions_ID )
+
+	INTEGER in_anaInstructions_ID
+	
+	IF ( in_anaInstructions_ID == ci_MESH_AND_SOLVE ) THEN
+		return c_MESH_AND_SOLVE
+	ELSE IF ( in_anaInstructions_ID == ci_MESH_ONLY ) THEN
+		return c_MESH_ONLY
+	ELSE
+		return ""
+	END IF
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION anaInstructions_toInt ( in_anaInstructions_string )
+
+	STRING in_anaInstructions_string[]
+	
+	IF ( in_anaInstructions_string == c_MESH_AND_SOLVE ) THEN
+		return ci_MESH_AND_SOLVE
+	ELSE IF ( in_anaInstructions_string == c_MESH_ONLY ) THEN
+		return ci_MESH_ONLY
+	ELSE
+		return -1
+	END IF
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION anaInstructions_validStrings()
+	return c_MESH_AND_SOLVE // " " // c_MESH_ONLY
+	
+END FUNCTION
+
+###############################################################################
+FUNCTION ID_toStr ( in_ID_integer )
+
+	INTEGER in_ID_integer
+	INTEGER status
+	
+	IF ( in_ID_integer > 0 ) THEN
+		return str_from_integer(in_ID_integer)
+	ELSE
+		return ""
+	END IF
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION ID_toInt ( in_ID_string )
+
+	STRING in_ID_string[]
+	
+	INTEGER status
+	INTEGER results
+	
+	results = str_to_integer( in_ID_string, status)
+	
+	IF ( status == 0 ) THEN
+		return results
+	Else
+		return -1
+	END IF
+	
+END FUNCTION
+
+###############################################################################
+
+FUNCTION fileGeometry_File_Type_toStr ( in_fileGeometry_File_Type_ID )
+
+	INTEGER in_fileGeometry_File_Type_ID
+
+	IF ( in_fileGeometry_File_Type_ID == ci_PARASOLID ) THEN
+		return c_PARASOLID
+	ELSE
+		return ""
+	END IF
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION fileGeometry_File_Type_toInt ( in_fileGeometry_File_Type_str )
+
+	STRING in_fileGeometry_File_Type_str[]
+	
+	IF ( in_fileGeometry_File_Type_str == c_PARASOLID ) THEN
+		return ci_PARASOLID
+	Else
+		return -1
+	END IF
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION fileGeometry_File_Type_vStrs()
+	# if more are added, the strings would be separated by spaces
+	return c_PARASOLID
+	
+END FUNCTION
+##############################################################################
+FUNCTION mat_Tropic_toStr ( in_mat_Tropic_ID )
+
+	INTEGER in_mat_Tropic_ID
+
+	SWITCH( in_mat_Tropic_ID )
+		CASE( ci_MAT_ISOTROPIC )
+			return c_MAT_ISOTROPIC
+		CASE( ci_MAT_ORTHOTROPIC )	
+			return c_MAT_ORTHOTROPIC
+		CASE( ci_MAT_ANSITROPIC )		
+			c_MAT_ANSITROPIC
+		DEFAULT
+			return ""
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION mat_Tropic_toInt ( in_mat_Tropic_str )
+
+	STRING in_mat_Tropic_str[]
+	
+	SWITCH( in_mat_Tropic_str )
+		CASE( c_MAT_ISOTROPIC )
+			return ci_MAT_ISOTROPIC
+		CASE( c_MAT_ORTHOTROPIC )	
+			return ci_MAT_ORTHOTROPIC
+		CASE( c_MAT_ANSITROPIC )		
+			ci_MAT_ANSITROPIC
+		DEFAULT
+			return -1
+	END SWITCH
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION mat_Tropic_validStrings()
+	return c_MAT_ISOTROPIC// "  " // c_MAT_ORTHOTROPIC // "   " // c_MAT_ANSITROPIC
+	
+END FUNCTION
+##############################################################################
+FUNCTION sol_Element_Type_toStr ( in_sol_Element_Type_ID )
+
+	INTEGER in_sol_Element_Type_ID
+
+	SWITCH(in_sol_Element_Type_ID)
+		CASE(ci_ELEMENT_TYPE_TETRA4)
+			return c_ELEMENT_TYPE_TETRA4
+		CASE( ci_ELEMENT_TYPE_TETRA8 )	
+			return c_ELEMENT_TYPE_TETRA8
+		CASE( ci_ELEMENT_TYPE_CQUAD4 )		
+			c_ELEMENT_TYPE_CQUAD4
+		CASE( ci_ELEMENT_TYPE_CQUAD8 )		
+			c_ELEMENT_TYPE_CQUAD8			
+		DEFAULT
+			return ""
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION sol_Element_Type_toInt ( in_sol_Element_Type_str )
+
+	STRING in_sol_Element_Type_str[]
+	
+	SWITCH(in_sol_Element_Type_str)
+		CASE(c_ELEMENT_TYPE_TETRA4)
+			return ci_ELEMENT_TYPE_TETRA4
+		CASE( c_ELEMENT_TYPE_TETRA8 )	
+			return ci_ELEMENT_TYPE_TETRA8
+		CASE( c_ELEMENT_TYPE_CQUAD4 )		
+			ci_ELEMENT_TYPE_CQUAD4
+		CASE( c_ELEMENT_TYPE_CQUAD8 )		
+			ci_ELEMENT_TYPE_CQUAD8	
+		DEFAULT
+			return -1
+	END SWITCH
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION sol_Element_Type_validStrings()
+	return c_ELEMENT_TYPE_TETRA4 // "  " // c_ELEMENT_TYPE_TETRA8 // "   " // c_ELEMENT_TYPE_CQUAD4 // "  " // c_ELEMENT_TYPE_CQUAD8	
+	
+END FUNCTION
+
+##############################################################################
+FUNCTION geometry_Type_toStr ( in_geometry_Type_ID )
+
+	INTEGER in_geometry_Type_ID
+
+	SWITCH(in_geometry_Type_ID)
+		CASE(ci_GEOMETRY_TYPE_FACE)
+			return c_GEOMETRY_TYPE_FACE
+		DEFAULT
+			return ""
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION geometry_Type_toInt ( in_geometry_Type_str )
+
+	STRING in_geometry_Type_str[]
+	
+	SWITCH(in_geometry_Type_str)
+		CASE(c_GEOMETRY_TYPE_FACE)
+			return ci_GEOMETRY_TYPE_FACE
+		DEFAULT
+			return -1
+	END SWITCH
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION geometry_Type_validStrings()
+	# if more are added, the strings would be separated by spaces
+	return c_GEOMETRY_TYPE_FACE	
+END FUNCTION
+##############################################################################
+FUNCTION Fixed_Free_toStr ( in_Fixed_Free_ID )
+
+	INTEGER in_Fixed_Free_ID
+
+	SWITCH(in_Fixed_Free_ID)
+		CASE(ci_FIXED )
+			return c_FIXED
+		CASE(ci_FREE )
+			return c_FREE			
+		DEFAULT
+			return ""
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION Fixed_Free_toInt ( in_Fixed_Free_str )
+
+	STRING in_Fixed_Free_str[]
+	
+	SWITCH(in_Fixed_Free_str)
+		CASE(c_FIXED )
+			return ci_FIXED
+		CASE(c_FREE )
+			return ci_FREE
+		DEFAULT
+			return -1
+	END SWITCH
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION Fixed_Free_validStrings()
+	# if more are added, the strings would be separated by spaces
+	return c_FIXED // "  " // c_FREE	
+END FUNCTION
+
+##############################################################################
+FUNCTION constraint_Type_toStr ( in_constraint_Type_ID )
+
+	INTEGER in_constraint_Type_ID
+
+	SWITCH(in_constraint_Type_ID)
+		CASE(ci_CONSTRAINT_DISPLACEMENT )
+			return c_CONSTRAINT_DISPLACEMENT
+			
+		# Pin and Ball not currently supported
+		#CASE(ci_CONSTRAINT_PIN )
+		#	return c_CONSTRAINT_PIN	
+		#CASE(ci_CONSTRAINT_BALL )
+		#	return c_CONSTRAINT_BALL					
+		DEFAULT
+			return ""
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION constraint_Type_toInt ( in_constraint_Type_str )
+
+	STRING in_constraint_Type_str[]
+	
+	SWITCH(in_constraint_Type_str)
+		CASE(c_CONSTRAINT_DISPLACEMENT )
+			return ci_CONSTRAINT_DISPLACEMENT
+		# Pin and Ball not currently supported			
+		#CASE(c_CONSTRAINT_PIN )
+		#	return ci_CONSTRAINT_PIN	
+		#CASE(c_CONSTRAINT_BALL )
+		#	return ci_CONSTRAINT_BALL	
+		DEFAULT
+			return -1
+	END SWITCH
+	
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION constraint_Type_validStrings()
+	# if more are added, the strings would be separated by spaces
+	return c_FIXED // "  " // c_FREE	
+END FUNCTION
+
+###############################################################################
+FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
+										in_FEAModelDefinitionFile,		@
+										in_logFile, 					@
+										in_ErrorMessages_maxCount,		@	
+										in_out_ErrorMessages_current,	@									
+										in_out_errorMessages )										
+										
+	STRING 	in_Working_Dir[]
+	STRING 	in_FEAModelDefinitionFile[]										
+	INTEGER in_LogFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()	
+	
+	STRING  functionName[64] = "readFEAModelDefinition"	
+	
+	STRING 	fileName[1024] 
+	INTEGER returnStatus = 0
+	INTEGER modelFile
+	STRING  buffer[2028]
+	INTEGER length
+	INTEGER lineNum
+	LOGICAL shouldContinue
+	
+	INTEGER	loopIncrement
+	INTEGER	maxInputFileLength = 1000
+	
+	LOGICAL unknownFieldFound 
+	
+
+	fileName = in_Working_Dir // "\" // in_FEAModelDefinitionFile
+		
+	text_write_string( in_LogFile, "Opening file: " // fileName)
+
+    IF ( !file_exists(fileName,"") ) THEN		
+		addErrorMessage( @
+				formatErrorMessage( c_WARNING, functionName, "Could not find input file: " // fileName // ", Return Status: " // returnStatus), @
+				in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+        RETURN -1
+    END IF	
+	
+    returnStatus = text_open( fileName, "OR", 0, 0, modelFile )
+
+    IF ( returnStatus != 0 ) THEN
+		addErrorMessage( @
+				formatErrorMessage( c_ERROR, functionName, "Could not open input file: " // fileName // ", Return Status: " // returnStatus), @
+				in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+        RETURN -1		
+		
+        RETURN returnStatus
+    END IF	
+	
+	lineNum = 0
+	
+	text_write_string( in_LogFile, "****************** Begin " // in_FEAModelDefinitionFile // " **********************")
+    WHILE ( text_read_string( modelFile, buffer, length ) == 0 )
+		lineNum += 1
+		text_write_string( in_LogFile, buffer)
+		
+		shouldContinue = FALSE			
+		buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum )
+		# shouldContinue == TRUE means that the line was blank or contained only a comment
+		If (shouldContinue ) THEN CONTINUE			
+		
+		IF ( buffer == c_ANALYSIS ) THEN 
+			ana_Count += 1
+		ELSE IF (buffer == c_FILES ) THEN
+			file_Count += 1
+		ELSE IF (buffer == c_SUBCASE ) THEN
+			subcase_Count += 1			
+		ELSE IF (buffer == c_MESH_PARAMETERS ) THEN
+			mesh_Params_Count += 1
+		ELSE IF (buffer == c_MATERIAL ) THEN	
+			mat_Count += 1
+		ELSE IF (buffer == c_SOLID ) THEN	
+			sol_Count  += 1
+		ELSE IF (buffer == c_POINT ) THEN	
+			point_Count  += 1		
+		ELSE IF (buffer == c_GEOMETRY ) THEN	
+			geometry_Count  += 1						
+		ELSE IF (buffer == c_DISPLACEMENT ) THEN	
+			disp_Count  += 1						
+		ELSE IF (buffer == c_PIN ) THEN	
+			pin_Count  += 1	
+		ELSE IF (buffer == c_CONSTRAINT ) THEN	
+			constraint_Count += 1	
+		ELSE IF (buffer == c_LOAD_VALUE ) THEN	
+			load_Value_Count += 1	
+		ELSE IF (buffer == c_LOAD ) THEN	
+			load_Count += 1				
+		ENDIF				
+	END WHILE
+	
+	text_write_string( in_LogFile, "******************** End " // in_FEAModelDefinitionFile // " **********************")	
+	
+	##############################################################
+	# Allocate arrays for fields that can contain multiple values
+	##############################################################
+	IF ( ana_Count > 0 ) THEN
+		sys_allocate_array ( ana_ID, 			1, ana_Count )
+		sys_allocate_array ( ana_Date, 			1, ana_Count )
+		sys_allocate_array ( ana_Configuration_ID,1, ana_Count )		
+		sys_allocate_array ( ana_Source_Model, 	1, ana_Count )		
+		sys_allocate_array ( ana_Type, 			1, ana_Count )
+		sys_allocate_array ( ana_Solver, 		1, ana_Count )
+		sys_allocate_array ( ana_Instructions, 	1, ana_Count )			
+	ENDIF
+	
+	IF ( file_Count > 0 ) THEN
+		sys_allocate_array ( file_Patran_Model_Name, 		1, file_Count )
+		sys_allocate_array ( file_Patran_Model_Dir, 		1, file_Count )
+		sys_allocate_array ( file_Geometry_File_Name, 		1, file_Count )
+		sys_allocate_array ( file_Geometry_File_Dir, 		1, file_Count )
+		sys_allocate_array ( file_Geometry_File_Type, 		1, file_Count )		
+	ENDIF	
+	
+	IF ( subcase_Count > 0 ) THEN
+		sys_allocate_array ( subcase_ID, 					1, subcase_Count )
+		sys_allocate_array ( subcase_Constraint_ID, 		1, subcase_Count )
+		sys_allocate_array ( subcase_Load_ID, 				1, subcase_Count )		
+	ENDIF		
+	
+		
+	IF ( mesh_Params_Count > 0 ) THEN
+		sys_allocate_array ( mesh_params_ID, 					1, mesh_Params_Count )
+		sys_allocate_array ( mesh_Max_Global_Length, 			1, mesh_Params_Count )
+		sys_allocate_array ( mesh_Max_Curv_Delta_Div_Edge_Ln, 	1, mesh_Params_Count )
+		sys_allocate_array ( mesh_Ratio_Min_Edge_To_Max_Edge, 	1, mesh_Params_Count )
+		sys_allocate_array ( mesh_Match_Face_Proximity_Tol, 	1, mesh_Params_Count )	
+	ENDIF
+	
+	IF ( mat_Count > 0 ) THEN
+		sys_allocate_array ( mat_ID, 				1,mat_Count )
+		sys_allocate_array ( mat_Name, 				1,mat_Count )		
+		sys_allocate_array ( mat_Tropic_Type, 		1,mat_Count )
+		sys_allocate_array ( mat_Description, 		1,mat_Count )	
+		sys_allocate_array ( mat_Youngs_Modulus, 	1,mat_Count )
+		sys_allocate_array ( mat_Poissons_Ratio, 	1,mat_Count )
+		sys_allocate_array ( mat_Density, 			1,mat_Count )
+		sys_allocate_array ( mat_Therm_Expan_Coef, 	1,mat_Count )		
+	ENDIF
+	
+	IF ( sol_Count > 0 ) THEN
+		sys_allocate_array ( sol_ID, 				1, sol_Count )
+		sys_allocate_array ( sol_Element_Type, 		1, sol_Count )
+		sys_allocate_array ( sol_Mat_ID, 			1, sol_Count )
+		sys_allocate_array ( sol_Mesh_Params_ID, 	1, sol_Count )				
+	ENDIF
+	
+	IF ( point_Count > 0 ) THEN
+		sys_allocate_array ( point_ID, 				1, point_Count )
+		sys_allocate_array ( point_x, 				1, point_Count )
+		sys_allocate_array ( point_y, 				1, point_Count )
+		sys_allocate_array ( point_z, 				1, point_Count )					
+	ENDIF	
+	
+	IF ( geometry_Count > 0 ) THEN
+		sys_allocate_array ( geometry_ID, 			1,  geometry_Count )
+		sys_allocate_array ( geometry_Type, 		1,  geometry_Count )
+		sys_allocate_array ( geometry_Point_ID,  	1,  geometry_Count )				
+	ENDIF	
+	
+	IF ( disp_Count > 0 ) THEN
+		sys_allocate_array (disp_ID,   				1, 	disp_Count )									
+		sys_allocate_array (x_Disp_State,   		1, 	disp_Count )
+		sys_allocate_array (y_Disp_State,   		1, 	disp_Count )
+		sys_allocate_array (z_Disp_State,   		1, 	disp_Count )
+		sys_allocate_array (x_Rot_State,   			1, 	disp_Count ) 
+		sys_allocate_array (y_Rot_State,   			1, 	disp_Count )
+		sys_allocate_array (z_Rot_State,   			1, 	disp_Count )				
+		sys_allocate_array (x_Disp_State_set,   	1, 	disp_Count )
+		sys_allocate_array (y_Disp_State_set,   	1, 	disp_Count )
+		sys_allocate_array (z_Disp_State_set,   	1, 	disp_Count )
+		sys_allocate_array (x_Rot_State_set,   		1, 	disp_Count )  
+		sys_allocate_array (y_Rot_State_set,   		1, 	disp_Count )
+		sys_allocate_array (z_Rot_State_set,   		1, 	disp_Count )									
+		sys_allocate_array (x_Disp_Val,   			1, 	disp_Count )
+		sys_allocate_array (y_Disp_Val,   			1, 	disp_Count )
+		sys_allocate_array (z_Disp_Val,   			1, 	disp_Count )
+		sys_allocate_array (x_Rot_Val,   			1, 	disp_Count )
+		sys_allocate_array (y_Rot_Val,   			1, 	disp_Count )
+		sys_allocate_array (z_Rot_Val,   			1, 	disp_Count )	
+		sys_allocate_array (x_Disp_Val_set,   		1, 	disp_Count )
+		sys_allocate_array (y_Disp_Val_set,   		1, 	disp_Count )
+		sys_allocate_array (z_Disp_Val_set,   		1, 	disp_Count )
+		sys_allocate_array (x_Rot_Val_set,   		1, 	disp_Count )
+		sys_allocate_array (y_Rot_Val_set,   		1, 	disp_Count )
+		sys_allocate_array (z_Rot_Val_set,   		1, 	disp_Count )													
+	ENDIF
+	
+	IF ( pin_Count > 0 ) THEN	
+		sys_allocate_array (pin_ID,   					1, 	pin_Count )
+		sys_allocate_array (pin_Axis_Start_Point_ID,   	1, 	pin_Count )
+		sys_allocate_array (pin_Axis_End_Point_ID,   	1, 	pin_Count )
+		sys_allocate_array (pin_Axial_Rot_State,   		1, 	pin_Count )		
+		sys_allocate_array (pin_Axial_Disp_State,   	1, 	pin_Count )		
+	ENDIF
+	
+	IF ( constraint_Count > 0 ) THEN	
+		sys_allocate_array (constraint_ID,   			1, 	constraint_Count )		
+		sys_allocate_array (constraint_SubCase_ID,   	1, 	constraint_Count )
+		sys_allocate_array (constraint_Type,   			1, 	constraint_Count )
+		sys_allocate_array (constraint_Geometry_ID,   	1, 	constraint_Count )
+		sys_allocate_array (constraint_Displacement_ID,	1, 	constraint_Count )
+		sys_allocate_array (constraint_Pin_ID,   		1, 	constraint_Count )
+		sys_allocate_array (constraint_Ball_ID,   		1, 	constraint_Count )
+	ENDIF
+	
+	IF ( load_Value_Count > 0 ) THEN
+		sys_allocate_array (load_Value_ID,   			1, 	load_Value_Count )
+		sys_allocate_array (load_value_Scalar,   		1, 	load_Value_Count )				
+		sys_allocate_array (load_Value_Scalar_Set,   	1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_Value,   		1, 	load_Value_Count )				
+		sys_allocate_array (load_Value_Value_Set,   	1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_x,   			1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_y,   			1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_z,   			1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_x_Set,   		1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_y_Set,   		1, 	load_Value_Count )	
+		sys_allocate_array (load_Value_z_Set,   		1, 	load_Value_Count )	
+	ENDIF	
+	
+	IF ( load_Count > 0 ) THEN
+		sys_allocate_array (load_ID,   					1, 	load_Count )
+		sys_allocate_array (load_SubCase_ID,   			1, 	load_Count )
+		sys_allocate_array (load_Type,   				1, 	load_Count )
+		sys_allocate_array (load_Geometry_ID,   		1, 	load_Count )
+		sys_allocate_array (load_Load_Value_ID,   		1, 	load_Count )
+	ENDIF	
+
+	######################################################
+	# Initialize Variables 
+	# This must be after the calls to sys_allocate_array
+	######################################################	
+	PatranModel.initializeVariables()	
+	
+	############################
+	# Read the name/value pairs
+	############################	
+	# Set to the beginning the model file
+	
+	returnStatus = text_set_position(modelFile, 0 )
+	
+	IF ( returnStatus != 0 ) THEN
+		addErrorMessage( @
+				formatErrorMessage( c_ERROR, functionName, "Could not reset input file to the starting position, File: " // fileName // ", Return Status: " // returnStatus), @
+				in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+		return returnStatus
+	END IF
+
+	lineNum = 0
+	
+	loopIncrement = 0
+	
+    WHILE ( text_read_string( modelFile, buffer, length ) == 0 )
+	
+		lineNum += 1
+		shouldContinue = FALSE			
+		buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum )
+		# shouldContinue == TRUE means that the line was blank or contained only a comment
+		If (shouldContinue ) THEN CONTINUE
+		
+		WRITE ( "***MAIN After**** " // str_from_integer(lineNum) // "  " // buffer )
+
+		unknownFieldFound = FALSE
+		# use loopIncrement to protect from a runaway program 
+		WHILE ( !unknownFieldFound &&  loopIncrement < maxInputFileLength )
+			loopIncrement += 1
+			SWITCH ( buffer )
+			   CASE( c_ANALYSIS )  
+					PatranModel.readAnalysis_NameValPairs(  @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+					WRITE( " MAIN Buffer: " // buffer // ", String Length: " // str_from_integer(str_length(buffer) ) )
+			   CASE(  c_FILES ) 
+					PatranModel.readFiles_NameValuePairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_SUBCASE )   
+					PatranModel.readSubCase_NameValuePairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)			
+			   CASE(  c_MESH_PARAMETERS ) 
+					PatranModel.readMeshParameters_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_MATERIAL ) 	
+					PatranModel.readMaterial_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)	
+			   CASE(  c_SOLID ) 	
+					PatranModel.readSolid_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_POINT ) 	
+					PatranModel.readPoint_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_GEOMETRY ) 	
+					PatranModel.readGeometry_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)			
+			   CASE(  c_DISPLACEMENT ) 	
+					PatranModel.readDisplacement_NameValPairs(  @ 
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_PIN ) 	
+					PatranModel.readPin_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_CONSTRAINT ) 	
+					PatranModel.readConstraint_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_LOAD_VALUE ) 	
+					PatranModel.readLoadValue_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_LOAD )
+					PatranModel.readLoad_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   DEFAULT
+					addErrorMessage( @
+						formatErrorMessage( c_ERROR, functionName, "Unexpected string encountered, Line number: " // str_from_integer(lineNum) //  ", String: " // buffer ), @
+						in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+					unknownFieldFound = TRUE
+			END SWITCH				
+		END WHILE
+		
+	END WHILE
+	
+	text_close(modelFile,"")	
+	
+	IF ( ( loopIncrement  ) >= maxInputFileLength ) THEN
+		addErrorMessage( @
+			formatErrorMessage( c_ERROR, functionName, "Exceeded maximum number of lines in input file, Line count: " // str_from_integer(loopIncrement) ), @
+			in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages)	
+	END IF 
+	
+	IF ( in_out_ErrorMessages_current > 0 ) THEN
+		return -1
+	Else
+		return 0
+	END IF
+		
+END FUNCTION				
+###############################################################################
+FUNCTION logInMemoryFEAModelDefinition(in_logFile)
+	# The data read and logged by this function is all contained as
+	# class variables
+	INTEGER in_LogFile		
+	Integer i
+	
+	text_write_string( in_LogFile, "******************** Begin In-Memory FEA Model Definition **********************")		
+	
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_ANALYSIS)  
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(ana_Count_temp))
+	FOR ( i = 1 TO ana_Count )
+		text_write_string( in_LogFile, "")
+		text_write_string( in_LogFile, "   " // c_ID 					// " = " // PatranModel.ID_toStr (ana_ID(i)) )
+		text_write_string( in_LogFile, "   " // c_DATE 					// " = " // ana_Date(i) )	
+		text_write_string( in_LogFile, "   " // c_CONFIGURATION_ID 		// " = " // ana_Configuration_ID(i) )
+		text_write_string( in_LogFile, "   " // c_SOURCE_MODEL 			// " = " // ana_Source_Model(i) )	
+		text_write_string( in_LogFile, "   " // c_TYPE 					// " = " // PatranModel.anaType_toStr(ana_Type(i)) )
+		text_write_string( in_LogFile, "   " // c_SOLVER 				// " = " // PatranModel.solver_toStr (ana_Solver(i)) )
+		text_write_string( in_LogFile, "   " // c_INSTRUCTIONS 			// " = " // PatranModel.anaInstructions_toStr(ana_Instructions(i)) )	
+	END FOR
+
+	
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_FILES)  	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(file_Count_temp))
+	FOR ( i = 1 TO file_Count_temp )
+		text_write_string( in_LogFile, "")
+		text_write_string( in_LogFile, "   " // c_PATRAN_MODEL_NAME 	// " = " // file_Patran_Model_Name(i) )
+		text_write_string( in_LogFile, "   " // c_PATRAN_MODEL_DIR 		// " = " // file_Patran_Model_Dir(i) )	
+		text_write_string( in_LogFile, "   " // c_GEOMETRY_FILE_NAME 	// " = " // file_Geometry_File_Name(i) )
+		text_write_string( in_LogFile, "   " // c_GEOMETRY_FILE_DIR 	// " = " // file_Geometry_File_Dir(i) )	
+		text_write_string( in_LogFile, "   " // c_GEOMETRY_FILE_TYPE 	// " = " // PatranModel.fileGeometry_File_Type_toStr(file_Geometry_File_Type(i)) )
+	END FOR
+	
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_SUBCASE) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(subcase_Count_temp))	
+	FOR ( i = 1 TO subcase_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 				// " = " // PatranModel.ID_toStr (subcase_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_CONSTRAINT_ID 	// " = " // PatranModel.ID_toStr (subcase_Constraint_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_LOAD_ID 			// " = " // PatranModel.ID_toStr (subcase_Load_ID(i)) )			
+	END FOR
+		
+		
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_MESH_PARAMETERS) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(mesh_params_Count_temp))	
+	FOR ( i = 1 TO mesh_params_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr (mesh_params_ID(i)) )
+			
+			text_write_string( in_LogFile, "   " // c_MAX_GLOBAL_LENGTH				// " = " // str_from_real(mesh_Max_Global_Length(i) ))
+			text_write_string( in_LogFile, "   " // c_MAX_CURV_DELTA_DIV_EDGE_LEN	// " = " // str_from_real(mesh_Max_Curv_Delta_Div_Edge_Ln(i) ))
+			text_write_string( in_LogFile, "   " // c_RATIO_MIN_EDGE_TO_MAX_EDGE	// " = " // str_from_real(mesh_Ratio_Min_Edge_To_Max_Edge(i) ))
+			text_write_string( in_LogFile, "   " // c_MATCH_FACE_PROXIMITY_TOL		// " = " // str_from_real(mesh_Match_Face_Proximity_Tol(i) ))
+	END FOR		
+		
+		
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_MATERIAL) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(mat_Count_temp))	
+	FOR ( i = 1 TO mat_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 				// " = " // PatranModel.ID_toStr (mat_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_NAME 				// " = " // mat_Name(i) )
+			text_write_string( in_LogFile, "   " // c_MAT_TROPIC_TYPE 	// " = " // PatranModel.mat_Tropic_toStr(mat_Tropic_Type(i)) )	
+			text_write_string( in_LogFile, "   " // c_DESCRIPTION		// " = " // mat_Description(i) )
+			
+			text_write_string( in_LogFile, "   " // c_YOUNGS_MODULUS	// " = " // str_from_real(mat_Youngs_Modulus(i) ))
+			text_write_string( in_LogFile, "   " // c_POISSONS_RATIO	// " = " // str_from_real(mat_Poissons_Ratio(i) ))
+			text_write_string( in_LogFile, "   " // c_DENSITY			// " = " // str_from_real(mat_Density(i) ))
+			text_write_string( in_LogFile, "   " // c_THERM_EXPAN_COEF	// " = " // str_from_real(mat_Therm_Expan_Coef(i) ))
+	END FOR		
+	
+	text_write_string( in_LogFile, "******************** END In-Memory FEA Model Definition **********************")		
+		
+		
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_SOLID) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(sol_Count_temp))	
+	FOR ( i = 1 TO sol_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 					// " = " // PatranModel.ID_toStr(sol_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_Element_Type 			// " = " // PatranModel.sol_Element_Type_toStr (sol_Element_Type(i)) )
+			text_write_string( in_LogFile, "   " // c_MATERIAL_ID 			// " = " // PatranModel.ID_toStr(sol_Mat_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_MESH_PARAMETERS_ID 	// " = " // PatranModel.ID_toStr(sol_Mesh_Params_ID(i)) )			
+	END FOR
+
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_POINT) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(point_Count_temp))	
+	FOR ( i = 1 TO point_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 		// " = " // PatranModel.ID_toStr(point_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_X_Cord 	// " = " // str_from_real(point_x(i)) )
+			text_write_string( in_LogFile, "   " // c_Y_Cord 	// " = " //	str_from_real(point_y(i)) )
+			text_write_string( in_LogFile, "   " // c_Z_Cord 	// " = " // str_from_real(point_z(i)) )			
+	END FOR	
+	
+	
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_GEOMETRY) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(geometry_Count_temp))	
+	FOR ( i = 1 TO geometry_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 					// " = " // PatranModel.ID_toStr(geometry_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_Type 					// " = " // PatranModel.geometry_Type_toStr (geometry_Type(i)) )
+			text_write_string( in_LogFile, "   " // c_Point_ID				// " = " // PatranModel.ID_toStr(geometry_Point_ID(i)) )		
+	END FOR	
+	
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_DISPLACEMENT) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(disp_Count_temp))	
+	FOR ( i = 1 TO disp_Count_temp )
+			text_write_string( in_LogFile, "")	
+			text_write_string( in_LogFile, "   " // c_ID 					// " = " // PatranModel.ID_toStr(disp_ID(i)) )
+			
+			text_write_string( in_LogFile, "   " // c_x_Disp_State 					// " = " // PatranModel.Fixed_Free_toStr (x_Disp_State(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Disp_State 					// " = " // PatranModel.Fixed_Free_toStr (y_Disp_State(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Disp_State 					// " = " // PatranModel.Fixed_Free_toStr (z_Disp_State(i)) )
+
+			text_write_string( in_LogFile, "   " // c_x_Rot_State 					// " = " // PatranModel.Fixed_Free_toStr (x_Rot_State(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Rot_State 					// " = " // PatranModel.Fixed_Free_toStr (y_Rot_State(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Rot_State 					// " = " // PatranModel.Fixed_Free_toStr (z_Rot_State(i)) )		
+	
+			text_write_string(in_LogFile,"" )
+			
+			text_write_string( in_LogFile, "   " // c_x_Disp_State 				// "_set = " // str_from_logical (x_Disp_State_set(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Disp_State 				// "_set = " // str_from_logical (y_Disp_State_set(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Disp_State 				// "_set = " // str_from_logical (z_Disp_State_set(i)) )
+			
+			text_write_string( in_LogFile, "   " // c_x_Rot_State 				// "_set = " // str_from_logical (x_Rot_State_set(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Rot_State 				// "_set = " // str_from_logical (y_Rot_State_set(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Rot_State 				// "_set = " // str_from_logical (z_Rot_State_set(i)) )				
+			
+			text_write_string(in_LogFile,"" )		
+			
+			text_write_string( in_LogFile, "   " // c_x_Disp_Val 					// " = " // str_from_real (x_Disp_Val(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Disp_Val 					// " = " // str_from_real (y_Disp_Val(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Disp_Val 					// " = " // str_from_real(z_Disp_Val(i)) )
+
+			text_write_string( in_LogFile, "   " // c_x_Rot_Val 					// " = " // str_from_real (x_Rot_Val(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Rot_Val 					// " = " // str_from_real (y_Rot_Val(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Rot_Val 					// " = " // str_from_real (z_Rot_Val(i)) )		
+	
+			text_write_string(in_LogFile,"" )
+			
+			text_write_string( in_LogFile, "   " // c_x_Disp_Val 				// "_set = " // str_from_logical (x_Disp_Val_set(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Disp_Val 				// "_set = " // str_from_logical (y_Disp_Val_set(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Disp_Val 				// "_set = " // str_from_logical (z_Disp_Val_set(i)) )
+			
+			text_write_string( in_LogFile, "   " // c_x_Rot_Val 				// "_set = " // str_from_logical (x_Rot_Val_set(i)) )
+			text_write_string( in_LogFile, "   " // c_y_Rot_Val 				// "_set = " // str_from_logical (y_Rot_Val_set(i)) )			
+			text_write_string( in_LogFile, "   " // c_z_Rot_Val 				// "_set = " // str_from_logical (z_Rot_Val_set(i)) )				
+			
+			
+	END FOR		
+
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_CONSTRAINT) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(constraint_Count_temp))	
+	FOR (i = 1 TO constraint_Count_temp)
+			text_write_string( in_LogFile, "" )	
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(constraint_ID(i)) )
+			text_write_string( in_LogFile, "   " //	c_Type							// " = " // PatranModel.constraint_Type_toStr(constraint_Type(i)) )
+			text_write_string( in_LogFile, "   " // c_SUBCASE_ID					// " = " // PatranModel.ID_toStr(constraint_SubCase_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_GEOMETRY_ID					// " = " // PatranModel.ID_toStr(constraint_Geometry_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_DISPLACEMENT_ID				// " = " // PatranModel.ID_toStr(constraint_Displacement_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_PIN_ID						// " = " // PatranModel.ID_toStr(constraint_Pin_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_BALL_ID						// " = " // PatranModel.ID_toStr(constraint_Ball_ID(i)) )
+	END FOR
+
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_LOAD_VALUE) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(load_value_Count_temp))	
+	FOR (i = 1 TO load_value_Count_temp)
+			text_write_string( in_LogFile, "" )	
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(load_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_VALUE 						// " = " // str_from_real(load_Value_Value(i)) )
+			text_write_string( in_LogFile, "   " // c_SCALAR_VALUE 					// " = " // str_from_real(load_value_Scalar(i)) )
+			text_write_string( in_LogFile, "   " // c_x_VALUE 						// " = " // str_from_real(load_Value_x(i)) )
+			text_write_string( in_LogFile, "   " // c_y_VALUE 						// " = " // str_from_real(load_Value_y(i)) )
+			text_write_string( in_LogFile, "   " // c_z_VALUE 						// " = " // str_from_real(load_Value_z(i)) )
+	END FOR
+	
+	
+END FUNCTION					
+###############################################################################
+FUNCTION replaceTabsWithSpaces(in_out_String )
+
+
+	STRING in_out_String[]
+	
+	INTEGER index_Tab
+	INTEGER tabCount
+	INTEGER maxAllowedNumTabs
+	
+	STRING tabString[8]
+	STRING spaceString[8]	
+	
+	tabString = "	"
+	spaceString = " "	
+	
+	tabCount = 0
+	
+	# The main purpose of the following line is to prevent an infinite loop
+	# when searching for tabs.  An input file typically would have no more than 
+	# five tabs per line.  More likely only one tab. If maxAllowedNumTabs is
+	# reached it is probably because this function was modified in a way
+	# that produced erroneous results
+	maxAllowedNumTabs = 100	
+
+	index_Tab = str_index( in_out_String, tabString)
+	
+	WHILE ( index_Tab > 0  && tabCount < maxAllowedNumTabs )
+		str_assign( in_out_String, index_Tab, 1, spaceString )
+		index_Tab = str_index( in_out_String, tabString )
+		tabCount +=1
+	END WHILE
+
+	# WRITE( "!!!!!! Tab Count!!!!!:   " // str_from_integer(tabCount) );	
+	
+	IF ( tabCount >= maxAllowedNumTabs ) THEN
+		return -1
+	else 
+		return 0
+	END IF
+	
+	
+END FUNCTION
+###############################################################################
+FUNCTION  getBufferNoComments( in_out_buffer, 				@
+							 out_ShouldContinue,			@
+							 in_ErrorMessages_maxCount,		@
+							 in_out_ErrorMessages_current,	@									
+							 in_out_errorMessages,			@
+							 in_LineNum)
+
+
+
+	STRING in_out_buffer[]
+	LOGICAL out_ShouldContinue
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_LineNum
+	INTEGER returnStatus = 0
+	
+	STRING  functionName[64] = "getBufferNoComments"	
+
+	out_ShouldContinue = FALSE
+	
+	# PCL functions str_strip_trail and str_strip_lead do not strip tabs.
+	# str_find_nomatch does not seem to work with tabs	
+	# Therefore, at the beginning of this function, replace tabs with spaces
+	returnStatus = PatranModel.replaceTabsWithSpaces(in_out_buffer)	
+	IF ( returnStatus != 0 ) THEN
+		addErrorMessage( @
+				formatErrorMessage( c_ERROR, functionName, "Could not remove all tabs from line: " // str_from_integer(in_LineNum)), @
+				in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages) 
+	END IF
+
+	
+	in_out_buffer = str_strip_trail (in_out_buffer ) 	
+	
+	# Skip null lines
+	IF ( str_length(in_out_buffer) == 0 ) THEN 
+		out_ShouldContinue = TRUE	
+		return in_out_buffer
+	END IF
+	
+	# Skip blank lines
+	# WRITE( " ")
+	# WRITE ("--str_find index:     " // str_from_integer(  str_find_nomatch(in_out_buffer, " " )) )	
+	# WRITE ("--str_find_nomatch--: " // in_out_buffer )	
+	# IF ( str_equal( in_out_buffer, "	") ) THEN WRITE ("**************** Found Tab ******")
+	IF ( str_find_nomatch(in_out_buffer, " " ) == 0 ) THEN
+		# All spaces
+		out_ShouldContinue = TRUE	
+		in_out_buffer = ""
+		return in_out_buffer		
+	END IF	
+	
+	
+	# remove comment,  Note - comment could be after a valid fields
+	in_out_buffer = PatranModel.removeComment(in_out_buffer)
+	
+	# Check for all blanks
+	IF ( str_find_nomatch(in_out_buffer, " " ) == 0 ) THEN
+		# All spaces
+		out_ShouldContinue = TRUE	
+		in_out_buffer = ""
+		return in_out_buffer		
+	END IF
+
+	in_out_buffer = str_strip_lead (in_out_buffer) 
+	in_out_buffer = str_strip_trail (in_out_buffer ) 	
+	
+	#IF ( !out_ShouldContinue ) THEN
+	#	WRITE ("--Should Not Cont Length: " // str_from_integer( str_length( in_out_buffer )) )
+	#	WRITE ("--Should Not Continue --: " // in_out_buffer )
+	#END IF
+	
+	return in_out_buffer
+
+END FUNCTION
+###############################################################################
+# Wherever a "#"  appears the rest of the line is discarded.
+FUNCTION removeComment( in_out_String)
+
+	STRING in_out_String[]
+	INTEGER indexKey
+
+
+	indexKey = str_index( in_out_String, "#")
+
+	#WRITE ("--removeComment--: " // str_from_integer( indexKey) )	
+	#WRITE ("--removeComment--: " // in_out_String )
+	IF ( indexKey > 0 ) THEN
+		IF ( indexKey == 1 ) THEN 
+			in_out_String = ""
+		ELSE
+			in_out_String = str_substr( in_out_String, 1, indexKey - 1 )
+		END IF
+	ENDIF		
+	
+	
+	/**************  
+	Don't allow // comments.  This will cause problems for the case where a 
+	directory path has double slashes.  This is allowed in directory paths
+	indexKey = str_index( in_out_String, "//")
+	
+	IF ( indexKey > 0 ) THEN
+		IF ( indexKey == 1 ) THEN 
+			in_out_String = ""
+		ELSE
+			in_out_String = str_substr( in_out_String, 1, indexKey - 1 )
+		END IF
+	ENDIF				
+	******************/
+	
+	
+	return in_out_String
+END FUNCTION	
+###############################################################################
+# WARNING - This function can only be run after the sys_allocate_array functions have be called
+FUNCTION initializeVariables()
+
+	INTEGER I
+	FOR ( I = 1 TO disp_Count )
+		x_Disp_State_set = FALSE
+		y_Disp_State_set = FALSE
+		z_Disp_State_set = FALSE
+		x_Rot_State_set  = FALSE
+		y_Rot_State_set  = FALSE
+		z_Rot_State_set  = FALSE						
+						
+		x_Disp_Val_set   = FALSE
+		y_Disp_Val_set   = FALSE
+		z_Disp_Val_set   = FALSE
+		x_Rot_Val_set    = FALSE
+		y_Rot_Val_set    = FALSE
+		z_Rot_Val_set    = FALSE						
+	END FOR
+	
+	FOR ( I = 1 TO pin_Count )
+		pin_Axial_Rot_State =  c_FREE
+		pin_Axial_Disp_State = c_FREE
+	END FOR
+
+	FOR ( I = 1 TO load_Count )
+		load_Value_Scalar_Set = FALSE
+		load_Value_Value_Set =	FALSE
+		load_Value_x_Set = 		FALSE
+		load_Value_y_Set = 		FALSE
+		load_Value_z_Set = 		FALSE
+	END FOR
+	
+	
+END FUNCTION
+
+###############################################################################
+FUNCTION readAnalysis_NameValPairs( modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)						
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readAnalysis_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	ana_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+					CASE (c_ID)
+					  ana_ID(ana_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  ana_ID(ana_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+					CASE (c_DATE)
+						ana_DATE(ana_Count_temp) = 	valueField	
+					CASE (c_Configuration_ID)
+						WRITE ( "                         Found: " //  c_DATE) 
+						ana_Configuration_ID(ana_Count_temp) = 	valueField						
+					CASE (c_SOURCE_MODEL)
+						ana_Source_Model(ana_Count_temp) = 	valueField	
+					CASE (c_TYPE)
+					  ana_Type(ana_Count_temp) = PatranModel.anaType_toInt (valueField)
+					  IF ( ana_Type(ana_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): " // PatranModel.anaType_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+					   
+					CASE (c_SOLVER)	
+						ana_Solver(ana_Count_temp) = PatranModel.solver_toInt (valueField)
+						 IF ( ana_Solver(ana_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.solver_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						END IF
+				  
+					CASE (c_INSTRUCTIONS)			
+					  ana_Instructions(ana_Count_temp) = PatranModel.anaInstructions_toInt(valueField)
+					  IF (  ana_Instructions(ana_Count_temp) < 0  ) THEN
+							addErrorMessage( @
+							formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.anaInstructions_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF		
+					  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH
+				
+				#WRITE ( "                         in_out_ErrorMessages_current" // str_from_integer(in_out_ErrorMessages_current) )
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+		WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+	
+END FUNCTION
+###############################################################################
+FUNCTION readFiles_NameValuePairs( modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readFiles_NameValuePairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	file_Count_temp += 1	
+
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+
+					CASE (c_PATRAN_MODEL_NAME)
+						file_Patran_Model_Name(file_Count_temp) = 	valueField	
+					CASE (c_PATRAN_MODEL_DIR)
+						file_Patran_Model_Dir(file_Count_temp) = 	valueField		
+					CASE (c_PATRAN_MODEL_DIR)
+						file_Patran_Model_Dir(file_Count_temp) = 	valueField					
+					CASE (c_GEOMETRY_FILE_NAME)
+						file_Geometry_File_Name(file_Count_temp) = 	valueField	
+					CASE (c_GEOMETRY_FILE_DIR)
+						file_Geometry_File_Dir(file_Count_temp) = 	valueField						
+						
+					CASE (c_GEOMETRY_FILE_TYPE)
+					  file_Geometry_File_Type(file_Count_temp) = PatranModel.fileGeometry_File_Type_toInt (valueField)
+					  IF ( file_Geometry_File_Type(file_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): " // PatranModel.fileGeometry_File_Type_vStrs()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF 
+					  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH
+				
+				#WRITE ( "                         in_out_ErrorMessages_current" // str_from_integer(in_out_ErrorMessages_current) )
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+END FUNCTION
+###############################################################################
+FUNCTION readSubCase_NameValuePairs( modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING 	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readSubCase_NameValuePairs"		
+	
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	subcase_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE		
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )				
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+					CASE (c_ID)
+					  subcase_ID(subcase_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF ( subcase_ID(subcase_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+
+					CASE (c_CONSTRAINT_ID)
+					  subcase_Constraint_ID(subcase_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  subcase_Constraint_ID(subcase_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+					  
+					CASE (c_LOAD_ID)
+					  subcase_Load_ID(subcase_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  subcase_Load_ID(subcase_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF 				  
+							  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH
+				
+				#WRITE ( "                         in_out_ErrorMessages_current" // str_from_integer(in_out_ErrorMessages_current) )
+				
+			END IF
+		END IF
+	END WHILE
+
+	in_out_Buffer = buffer
+
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+
+END FUNCTION
+###############################################################################
+FUNCTION readMeshParameters_NameValPairs( modelFile,				@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)			 
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readMeshParameters_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	mesh_params_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+					
+					CASE (c_ID)
+						mesh_params_ID(mesh_params_Count_temp) =  PatranModel.ID_toInt(valueField)
+						IF (  mesh_params_ID(mesh_params_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+
+					CASE (c_MAX_GLOBAL_LENGTH)
+						mesh_Max_Global_Length(mesh_params_Count_temp) = 	str_to_real(valueField, realStatus)		
+						IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+						END IF
+						
+					CASE (c_MAX_CURV_DELTA_DIV_EDGE_LEN)
+						mesh_Max_Curv_Delta_Div_Edge_Ln(mesh_params_Count_temp) = str_to_real(valueField, realStatus)	
+						IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						END IF									
+						
+					CASE (c_RATIO_MIN_EDGE_TO_MAX_EDGE)
+						mesh_Ratio_Min_Edge_To_Max_Edge(mesh_params_Count_temp) = str_to_real(valueField, realStatus)
+						IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+						END IF			
+
+					CASE (c_MATCH_FACE_PROXIMITY_TOL)
+						mesh_Match_Face_Proximity_Tol(mesh_params_Count_temp) = str_to_real(valueField, realStatus)
+						IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+						END IF
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+	
+END FUNCTION
+###############################################################################
+FUNCTION readMaterial_NameValPairs( modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readMaterial_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	mat_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+					
+					CASE (c_ID)
+					  mat_ID(mat_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  mat_ID(mat_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+
+					CASE (c_NAME)
+						mat_Name(mat_Count_temp) = 	valueField					  
+					  
+					CASE (c_MAT_TROPIC_TYPE)  
+					  mat_Tropic_Type(mat_Count_temp) =  PatranModel.mat_Tropic_toInt(valueField)
+					  IF (  mat_Tropic_Type(mat_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.mat_Tropic_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF				
+
+					CASE (c_DESCRIPTION)
+						mat_Description(mat_Count_temp) = 	valueField						
+						
+					CASE (c_YOUNGS_MODULUS)
+						mat_Youngs_Modulus(mat_Count_temp) = str_to_real(valueField, realStatus)	
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						END IF						
+					CASE (c_POISSONS_RATIO)
+						mat_Poissons_Ratio(mat_Count_temp) = str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						END IF
+					CASE (c_DENSITY)
+						mat_Density(mat_Count_temp) = str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+						END IF
+					CASE (c_THERM_EXPAN_COEF)
+						mat_Therm_Expan_Coef(mat_Count_temp) = str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+						END IF
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+		WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )		
+
+END FUNCTION
+###############################################################################
+FUNCTION readSolid_NameValPairs(	modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages, 			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readSolid_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	sol_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+					
+					CASE (c_ID)
+					  sol_ID(sol_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  sol_ID(sol_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+	  
+					  
+					CASE (c_Element_Type)  
+					  sol_Element_Type(sol_Count_temp) =  PatranModel.sol_Element_Type_toInt(valueField)
+					  IF (  sol_Element_Type(sol_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.sol_Element_Type_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF				
+
+					CASE (c_Material_ID)  					  
+					  sol_Mat_ID(sol_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  sol_Mat_ID(sol_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF					  
+					  
+					CASE (c_MESH_PARAMETERS_ID) 
+					  sol_Mesh_Params_ID(sol_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  sol_Mesh_Params_ID(sol_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF						  
+					  					
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+		WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+END FUNCTION
+###############################################################################
+FUNCTION readPoint_NameValPairs( 	modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	INTEGER startLineNum
+	
+	STRING  functionName[64] = "readPoint_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus		
+
+	STRING nameField[128]
+	STRING valueField[128]	
+
+	logical point_x_undefined = TRUE
+	logical point_y_undefined = TRUE
+	logical point_z_undefined = TRUE	
+
+	startLineNum = in_out_LineNum
+	
+	point_Count_temp += 1	
+
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )
+				
+					CASE (c_ID)
+					  point_ID(point_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  point_ID(point_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+	  
+					CASE (c_X_Cord)
+						point_x(point_Count_temp) = str_to_real(valueField, realStatus)	
+						point_x_undefined = FALSE
+						IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+						ELSE
+							point_x_undefined = FALSE
+						END IF
+						
+						
+									
+					CASE (c_Y_Cord)
+						point_y(point_Count_temp) = str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						ELSE
+							point_y_undefined = FALSE
+						END IF
+					CASE (c_Z_Cord)
+						point_z(point_Count_temp) = str_to_real(valueField, realStatus)						
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+						ELSE
+							point_z_undefined = FALSE				  
+						END IF
+					  					
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	IF ( point_x_undefined || point_y_undefined || point_z_undefined ) THEN
+		addErrorMessage( @
+			formatErrorMessage( c_ERROR, functionName, "A " // c_POINT // " must have a " // c_X_Cord // ", " // c_Y_Cord // ", and " //  c_Z_Cord // " entries, Line number: "  // str_from_integer(startLineNum)), @
+				in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+	END IF	
+		
+	in_out_Buffer = buffer
+	
+		WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+END FUNCTION
+###############################################################################
+FUNCTION readGeometry_NameValPairs( modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages, 			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readGeometry_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	geometry_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  geometry_ID(geometry_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  geometry_ID(geometry_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  
+					
+					CASE (c_Type)  
+					  geometry_Type(geometry_Count_temp) =  PatranModel.geometry_Type_toInt(valueField)
+					  IF (  geometry_Type(geometry_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.geometry_Type_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF				
+
+					CASE (c_Point_ID)  					  
+					  geometry_Point_ID(geometry_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  geometry_Point_ID(geometry_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF					  		  		
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+	
+END FUNCTION			
+###############################################################################
+FUNCTION readDisplacement_NameValPairs( modelFile,						@
+										in_ErrorMessages_maxCount,		@	
+										in_out_ErrorMessages_current,	@									
+										in_out_errorMessages, 			@
+										in_out_LineNum,					@
+										in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readDisplacement_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	disp_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  disp_ID(disp_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  disp_ID(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  
+					
+					CASE (c_x_Disp_State)  
+					  x_Disp_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  x_Disp_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						x_Disp_State_set(disp_Count_temp) = TRUE
+					  END IF				
+
+					  
+					CASE (c_y_Disp_State)  
+					  y_Disp_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  y_Disp_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						y_Disp_State_set(disp_Count_temp) = TRUE									
+					  END IF			  
+								  
+					CASE (c_z_Disp_State)  
+					  z_Disp_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  z_Disp_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						z_Disp_State_set(disp_Count_temp) = TRUE
+					  END IF							  
+					  
+					CASE (c_x_Rot_State)  
+					  x_Rot_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  x_Rot_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						x_Rot_State_set(disp_Count_temp) = TRUE				
+					  END IF				
+					  
+					CASE (c_y_Rot_State)  
+					  y_Rot_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  y_Rot_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						y_Rot_State_set(disp_Count_temp) = TRUE										
+					  END IF									  
+					  
+					CASE (c_z_Rot_State)  
+					  z_Rot_State(disp_Count_temp) =  PatranModel.Fixed_Free_toInt(valueField)
+					  IF (  z_Rot_State(disp_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						z_Rot_State_set(disp_Count_temp) = TRUE	
+					  END IF						  
+			  		  		
+					#---------------------------------------------------------------------------------------- 
+
+					CASE (c_x_Disp_Val)  
+					  x_Disp_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						x_Disp_Val_set(disp_Count_temp) = TRUE
+					  END IF				
+
+					  
+					CASE (c_y_Disp_Val)  
+					  y_Disp_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						y_Disp_Val_set(disp_Count_temp) = TRUE									
+					  END IF			  
+								  
+					CASE (c_z_Disp_Val)  
+					  z_Disp_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						z_Disp_Val_set(disp_Count_temp) = TRUE
+					  END IF							  
+					  
+					CASE (c_x_Rot_Val)  
+					  x_Rot_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						x_Rot_Val_set(disp_Count_temp) = TRUE				
+					  END IF				
+					  
+					CASE (c_y_Rot_Val)  
+					  y_Rot_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						y_Rot_Val_set(disp_Count_temp) = TRUE										
+					  END IF									  
+					  
+					CASE (c_z_Rot_Val)  
+					  z_Rot_Val(disp_Count_temp) =  str_to_real(valueField, realStatus)
+					   IF (  realStatus != 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not covert value in name-value pair to a floating point number, name-value pair: " // buffer //  ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						z_Rot_Val_set(disp_Count_temp) = TRUE	
+					  END IF						
+						
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+	
+END FUNCTION
+###############################################################################	
+FUNCTION readPin_NameValPairs( 	modelFile,						@
+								in_ErrorMessages_maxCount,		@	
+								in_out_ErrorMessages_current,	@									
+								in_out_errorMessages, 			@
+								in_out_LineNum,					@
+								in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum	
+	STRING	in_out_Buffer[]	
+	
+	STRING  functionName[64] = "readPin_NameValPairs"		
+	
+	INTEGER length		
+	STRING  buffer[2028]
+	text_read_string( modelFile, buffer, length )		
+	
+	in_out_Buffer = buffer	
+	
+END FUNCTION
+###############################################################################
+FUNCTION readConstraint_NameValPairs( 	modelFile,						@
+										in_ErrorMessages_maxCount,		@	
+										in_out_ErrorMessages_current,	@									
+										in_out_errorMessages, 			@
+										in_out_LineNum,					@
+										in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readConstraint_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	constraint_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  constraint_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  constraint_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  
+					
+					CASE (c_SubCase_ID)
+					  constraint_SubCase_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  constraint_SubCase_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  					
+
+					CASE (c_GEOMETRY_ID)
+					  constraint_Geometry_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  constraint_SubCase_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF									
+					
+					CASE (c_Type)  
+						constraint_Type(constraint_Count_temp) =  PatranModel.constraint_Type_toInt(valueField)
+						IF (  constraint_Type(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.constraint_Type_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF				
+
+					CASE (c_DISPLACEMENT_ID)  					  
+						constraint_Displacement_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+						IF (  constraint_Displacement_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF	
+					CASE (c_PIN_ID)  					  
+						constraint_Pin_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+						IF (  constraint_Pin_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF					  		  		
+					CASE (c_BALL_ID)  					  
+						constraint_Ball_ID(constraint_Count_temp) =  PatranModel.ID_toInt(valueField)
+						IF (  constraint_Ball_ID(constraint_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF					  		  							  
+					  					  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+	
+END FUNCTION
+###############################################################################		
+FUNCTION readLoadValue_NameValPairs( 	modelFile,						@
+										in_ErrorMessages_maxCount,		@	
+										in_out_ErrorMessages_current,	@									
+										in_out_errorMessages, 			@
+										in_out_LineNum,					@
+										in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+	INTEGER in_out_LineNum
+	STRING	in_out_Buffer[]
+	
+	STRING  functionName[64] = "readLoadValue_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	load_Value_Count_temp += 1	
+	
+	buffer = ""
+	WHILE ( equalsSignFound )	
+
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  load_Value_ID(load_Value_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  load_Value_ID(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  
+					  		  							  
+					CASE (c_SCALAR_VALUE)  
+					  load_value_Scalar(load_Value_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  load_value_Scalar(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						load_Value_Scalar_Set(load_Value_Count_temp) = TRUE
+					  END IF
+										
+					CASE (c_VALUE)  
+					  load_Value_Value(load_Value_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  load_Value_Value(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						load_Value_Value_Set(load_Value_Count_temp) = TRUE
+					  END IF
+					    			
+					CASE (c_x_VALUE)  
+					  load_Value_x(load_Value_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  load_Value_x(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						load_Value_x_Set(load_Value_Count_temp) = TRUE
+					  END IF
+					  								
+					CASE (c_y_VALUE)  
+					  WRITE ( "Function: " // functionName  // ", y_Value: " // valueField )	
+					  REAL TestY
+					  TestY = str_to_real(valueField, realStatus)
+					  load_Value_y(load_Value_Count_temp) =  str_to_real(valueField, realStatus)
+					  WRITE ( "Function: " // functionName  // ", y_Value: " // str_from_real(load_Value_y(load_Value_Count_temp)) )	
+					  WRITE ( "Function: " // functionName  // ", y_Value: " // str_from_real(TestY) )
+					  IF (  load_Value_y(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						load_Value_y_Set(load_Value_Count_temp) = TRUE
+					  END IF								
+
+					CASE (c_z_VALUE)  
+					  load_Value_z(load_Value_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  load_Value_z(load_Value_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.Fixed_Free_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  ELSE
+						load_Value_z_Set(load_Value_Count_temp) = TRUE
+					  END IF	
+											  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+		END IF
+	END WHILE
+		
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+	
+END FUNCTION
+###############################################################################		
+FUNCTION readLoad_NameValPairs( 	modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)			
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()	
+	INTEGER in_out_LineNum		
+	STRING	in_out_Buffer[]	
+
+	
+	STRING  functionName[64] = "readLoad_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	load_Count_temp += 1	
+
+	buffer = ""
+	WRITE ( " +++++ FunctionName:")
+
+	buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )		
+	WRITE ( "Function: " // functionName // " Buffer: " // buffer)		
+	WHILE ( equalsSignFound )	
+		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+			buffer = ""
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			WRITE ("Function: " // functionName // " ShouldContinue: " // str_from_logical(shouldContinue))
+			If (shouldContinue ) THEN CONTINUE 
+
+		END IF
+
+	END WHILE		
+
+
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+
+
+END FUNCTION
+###############################################################################			
+END CLASS

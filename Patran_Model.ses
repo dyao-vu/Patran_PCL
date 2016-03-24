@@ -1,0 +1,30 @@
+!!compile Patran_Model.pcl into Patran_Model.plb
+!!library Patran_Model.plb
+ 
+#	Revision History
+#	Date		Developer 	Revision
+#	12/10/2015	R. Owens	Initial Release
+#
+#	This session file is submitted (i.e. run by Patran) via a command such as:
+#		patran -b -graphics -sfp  Patran_Model.ses -stdout Patran_Model_Session.log
+#
+#	See the Patran_Model.pcl for documentation on the variables in this file and how to use the
+# 	function Patran_Model() (see below).
+ 
+STRING patranInstall_Dir[512] = "C:\MSC.Software\Patran_x64\20140"
+
+# Both of the following work
+# STRING working_Dir[512] = "E:\Temp\scratch\2015_07_13_Patran_PCL_Code\Analysis\Mesher\Patran"
+STRING working_Dir[512] = "."
+
+STRING fEAModelDefinitionFile[512] = "Patran_Input_File.txt"
+
+STRING log_DirAndFileName[512] = "PatranModel_Application.log"
+
+PatranModel.createModel( 	patranInstall_Dir,		@ 
+							working_Dir,			@
+							fEAModelDefinitionFile, @
+							log_DirAndFileName )
+
+
+		
