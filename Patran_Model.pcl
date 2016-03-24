@@ -1331,7 +1331,8 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 
 		unknownFieldFound = FALSE
 		# use loopIncrement to protect from a runaway program 
-		WHILE ( !unknownFieldFound &&  loopIncrement < maxInputFileLength )
+		WRITE ("MaxInputFileLength: " // str_from_integer(maxInputFileLength))
+		WHILE ( !unknownFieldFound &&  loopIncrement < maxInputFileLength && buffer != "" )
 			loopIncrement += 1
 			SWITCH ( buffer )
 			   CASE( c_ANALYSIS )  
@@ -1813,9 +1814,13 @@ FUNCTION readAnalysis_NameValPairs( modelFile,						@
 	
 	buffer = ""
 	WHILE ( equalsSignFound )	
-
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -1916,8 +1921,13 @@ FUNCTION readFiles_NameValuePairs( modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2000,8 +2010,13 @@ FUNCTION readSubCase_NameValuePairs( modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE		
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2090,8 +2105,13 @@ FUNCTION readMeshParameters_NameValPairs( modelFile,				@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2193,8 +2213,13 @@ FUNCTION readMaterial_NameValPairs( modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2306,8 +2331,13 @@ FUNCTION readSolid_NameValPairs(	modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2410,8 +2440,13 @@ FUNCTION readPoint_NameValPairs( 	modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2519,8 +2554,13 @@ FUNCTION readGeometry_NameValPairs( modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2605,8 +2645,13 @@ FUNCTION readDisplacement_NameValPairs( modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2822,8 +2867,13 @@ FUNCTION readConstraint_NameValPairs( 	modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -2939,8 +2989,13 @@ FUNCTION readLoadValue_NameValPairs( 	modelFile,						@
 	buffer = ""
 	WHILE ( equalsSignFound )	
 
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER textReadStatus
+		textReadStatus = text_read_string( modelFile, buffer, length )
+		IF ( textReadStatus != 0 ) THEN
 			buffer = ""
+			IF ( textReadStatus == -1 ) THEN
+				equalsSignFound = FALSE
+			ENDIF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
@@ -3057,7 +3112,6 @@ FUNCTION readLoad_NameValPairs( 	modelFile,						@
 	STRING  buffer[2028]	
 	
 	INTEGER length	
-	INTEGER realStatus
 
 	STRING nameField[128]
 	STRING valueField[128]	
@@ -3065,21 +3119,76 @@ FUNCTION readLoad_NameValPairs( 	modelFile,						@
 	load_Count_temp += 1	
 
 	buffer = ""
-	WRITE ( " +++++ FunctionName:")
-
-	buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )		
-	WRITE ( "Function: " // functionName // " Buffer: " // buffer)		
 	WHILE ( equalsSignFound )	
-		IF ( text_read_string( modelFile, buffer, length ) != 0 ) THEN
+		INTEGER readStrStatus
+		readStrStatus = text_read_string( modelFile, buffer, length )
+		IF ( readStrStatus != 0 ) THEN
 			buffer = ""
+			IF (readStrStatus == -1) THEN
+				equalsSignFound = FALSE
+			END IF
 		ELSE
 			in_out_LineNum += 1
 			shouldContinue = FALSE			
 			
 			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
 			# shouldContinue == TRUE means that the line was blank or contained only a comment
-			WRITE ("Function: " // functionName // " ShouldContinue: " // str_from_logical(shouldContinue))
 			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE					
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  load_ID(load_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  load_ID(load_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  
+					  		  							  
+					CASE (c_SubCase_ID)
+					  load_SubCase_ID(load_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  load_SubCase_ID(load_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF 
+
+					  CASE (c_GEOMETRY_ID)
+					  load_Geometry_ID(load_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  load_Geometry_ID(load_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF
+										
+					CASE (c_LOAD_VALUE_ID)
+					  load_Load_Value_ID(load_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  load_Load_Value_ID(load_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF 
+										
+					CASE (c_Type)  
+						load_Type(load_Count_temp) =  PatranModel.constraint_Type_toInt(valueField)
+						IF (  load_Type(load_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.constraint_Type_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF	  					    			
+											  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+
+				
+			END IF
 
 		END IF
 
