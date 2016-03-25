@@ -232,7 +232,8 @@ CLASS PatranModel
 						c_z_Disp_Val[32],						@
 						c_x_Rot_Val[32],						@
 						c_y_Rot_Val[32],						@
-						c_z_Rot_Val[32]						
+						c_z_Rot_Val[32],						@
+						c_FORCE_type[32]						
 						
 	CLASSWIDE INTEGER	ci_NASTRAN,								@
 						ci_MESH_AND_SOLVE,						@
@@ -250,7 +251,9 @@ CLASS PatranModel
 						ci_FREE,								@
 						ci_CONSTRAINT_DISPLACEMENT,				@
 						ci_CONSTRAINT_PIN,						@	
-						ci_CONSTRAINT_BALL	
+						ci_CONSTRAINT_BALL,						@
+						ci_LOAD_PRESSURE,						@
+						ci_LOAD_FORCE
 						
 						########################################
 						# Analysis (Should be only one of these)
@@ -442,7 +445,7 @@ CLASS PatranModel
 						load_Count_temp,							@
 						load_ID(VIRTUAL),							@
 						load_SubCase_ID(VIRTUAL)					
-	CLASSWIDE STRING	load_Type[32](VIRTUAL)	
+	CLASSWIDE INTEGER	load_Type(VIRTUAL)	
 	CLASSWIDE INTEGER	load_Geometry_ID(VIRTUAL),					@
 						load_Load_Value_ID(VIRTUAL)					
 								
@@ -658,6 +661,7 @@ FUNCTION initializeConstants()
 	c_x_Rot_Val =					"x_Rot_Val"
 	c_y_Rot_Val =					"y_Rot_Val"
 	c_z_Rot_Val =					"z_Rot_Val"		
+	c_FORCE_type =					"FORCE"
 	
 	
 	
@@ -677,7 +681,9 @@ FUNCTION initializeConstants()
 	ci_FREE	 =						2
 	ci_CONSTRAINT_DISPLACEMENT = 	1
 	ci_CONSTRAINT_PIN = 			2
-	ci_CONSTRAINT_BALL = 			3	
+	ci_CONSTRAINT_BALL = 			3
+	ci_LOAD_PRESSURE =				1
+	ci_LOAD_FORCE =					2	
 	
 	###################################
 	# Initialize Array Counts to Zero
@@ -1062,6 +1068,38 @@ END FUNCTION
 FUNCTION constraint_Type_validStrings()
 	# if more are added, the strings would be separated by spaces
 	return c_FIXED // "  " // c_FREE	
+END FUNCTION
+
+##############################################################################
+FUNCTION load_Type_toStr ( in_load_Type_ID )
+	
+	INTEGER in_load_Type_ID
+
+	SWITCH(in_load_Type_ID)
+		CASE(ci_LOAD_PRESSURE)
+			return c_PRESSURE_type
+		CASE (ci_LOAD_FORCE)
+			return c_FORCE_type
+		DEFAULT
+			return -1
+	END SWITCH
+
+END FUNCTION
+#------------------------------------------------------------------------------
+FUNCTION load_Type_toInt ( in_load_Type_str )
+
+	STRING in_load_Type_str[]
+	
+	SWITCH(in_load_Type_str)
+		CASE(c_PRESSURE_type )
+			return ci_LOAD_PRESSURE
+		CASE(c_FORCE_type )
+			return ci_LOAD_FORCE	
+
+		DEFAULT
+			return -1
+	END SWITCH
+	
 END FUNCTION
 
 ###############################################################################
@@ -1580,12 +1618,24 @@ FUNCTION logInMemoryFEAModelDefinition(in_logFile)
 	text_write_string( in_LogFile, "   Count: " // str_from_integer(load_value_Count_temp))	
 	FOR (i = 1 TO load_value_Count_temp)
 			text_write_string( in_LogFile, "" )	
-			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(load_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(load_Value_ID(i)) )
 			text_write_string( in_LogFile, "   " // c_VALUE 						// " = " // str_from_real(load_Value_Value(i)) )
 			text_write_string( in_LogFile, "   " // c_SCALAR_VALUE 					// " = " // str_from_real(load_value_Scalar(i)) )
 			text_write_string( in_LogFile, "   " // c_x_VALUE 						// " = " // str_from_real(load_Value_x(i)) )
 			text_write_string( in_LogFile, "   " // c_y_VALUE 						// " = " // str_from_real(load_Value_y(i)) )
 			text_write_string( in_LogFile, "   " // c_z_VALUE 						// " = " // str_from_real(load_Value_z(i)) )
+	END FOR
+
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_LOAD) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(load_value_Count_temp))	
+	FOR (i = 1 TO load_value_Count_temp)
+			text_write_string( in_LogFile, "" )	
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(load_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_TYPE 							// " = " // PatranModel.load_Type_toStr(load_Type(i)) )
+			text_write_string( in_LogFile, "   " // c_SUBCASE_ID 					// " = " // PatranModel.ID_toStr(load_Subcase_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_GEOMETRY_ID 					// " = " // PatranModel.ID_toStr(load_Geometry_ID(i)) )
+			text_write_string( in_LogFile, "   " // c_LOAD_VALUE_ID 				// " = " // PatranModel.ID_toStr(load_Value_ID(i)) )
 	END FOR
 	
 	
@@ -3174,7 +3224,7 @@ FUNCTION readLoad_NameValPairs( 	modelFile,						@
 					  END IF 
 										
 					CASE (c_Type)  
-						load_Type(load_Count_temp) =  PatranModel.constraint_Type_toInt(valueField)
+						load_Type(load_Count_temp) =  PatranModel.load_Type_toInt(valueField)
 						IF (  load_Type(load_Count_temp) < 0 ) THEN
 							addErrorMessage( @
 								formatErrorMessage( c_ERROR, functionName, "Invalid value in name-value pair: " // buffer // ", Valid value(s): "  // PatranModel.constraint_Type_validStrings()  // ", Line number: " // str_from_integer(in_out_LineNum)), @
