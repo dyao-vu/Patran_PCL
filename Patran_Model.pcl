@@ -149,7 +149,9 @@ CLASS PatranModel
 						c_PIN[32],								@
 						c_CONSTRAINT[32],						@
 						c_LOAD_VALUE[32],                       @
-						c_LOAD[32]
+						c_LOAD[32],								@
+						c_MATERIAL_LAYUP[32],					@
+						c_LAYER[32]
 						
 			
 						###################################################################
@@ -197,8 +199,11 @@ CLASS PatranModel
 						c_x_VALUE[32],							@
 						c_y_VALUE[32],							@
 						c_z_VALUE[32],							@
-						c_LOAD_VALUE_ID[32]
-						
+						c_LOAD_VALUE_ID[32],					@
+						c_THICKNESS[32],						@
+						c_ORIENTATION[32],						@
+						c_DROP_ORDER[32]
+												
 						###################################
 						# Constants Defining Value Contents
 						###################################					
@@ -449,6 +454,21 @@ CLASS PatranModel
 	CLASSWIDE INTEGER	load_Geometry_ID(VIRTUAL),					@
 						load_Load_Value_ID(VIRTUAL)					
 								
+						#################
+						# Material Layup
+						#################	
+	CLASSWIDE INTEGER	material_layup_Count,						@
+						material_layup_Count_temp,					@
+						material_layup_ID(VIRTUAL),					@
+						layer_Count,								@
+						layer_Count_temp,							@
+						layer_ID(VIRTUAL),							@
+						layer_Material_ID(VIRTUAL),					@
+						layer_Drop_Order(VIRTUAL)
+	CLASSWIDE REAL		layer_Thickness(VIRTUAL),					@
+						layer_Orientation(VIRTUAL)
+
+
 
 ###############################################################################				
 FUNCTION  createModel( 	in_PatranInstall_Dir, 		@
@@ -626,6 +646,11 @@ FUNCTION initializeConstants()
 	c_y_VALUE =						"y_Value"
 	c_z_VALUE =						"z_Value"
 	c_LOAD_VALUE_ID =				"Load_Value_ID"
+	c_MATERIAL_LAYUP =				"Material_Layup"
+	c_LAYER =						"Layer"
+	c_THICKNESS =					"Thickness"
+	c_ORIENTATION =					"Orientation"
+	c_DROP_ORDER =					"Drop_Order"
 	
 	###################################
 	# Constants Defining Value Contents
@@ -714,6 +739,10 @@ FUNCTION initializeConstants()
 	load_Value_Count_temp = 	0
 	load_Count =				0
 	load_Count_temp = 			0
+	material_layup_Count =		0
+	material_layup_Count_temp = 0
+	layer_Count =				0
+	layer_Count_temp =			0
 	
 	return 0
 END FUNCTION
@@ -1192,8 +1221,12 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 		ELSE IF (buffer == c_LOAD_VALUE ) THEN	
 			load_Value_Count += 1	
 		ELSE IF (buffer == c_LOAD ) THEN	
-			load_Count += 1				
-		ENDIF				
+			load_Count += 1		
+		ELSE IF (buffer == c_MATERIAL_LAYUP) THEN
+			material_layup_Count += 1
+		ELSE IF (buffer == c_LAYER) THEN
+			layer_Count += 1
+		ENDIF					
 	END WHILE
 	
 	text_write_string( in_LogFile, "******************** End " // in_FEAModelDefinitionFile // " **********************")	
@@ -1333,6 +1366,19 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 		sys_allocate_array (load_Load_Value_ID,   		1, 	load_Count )
 	ENDIF	
 
+	IF ( material_layup_Count > 0 ) THEN
+		WRITE ("Allocated Material Layup Array!")
+		sys_allocate_array (material_layup_ID,   		1, 	material_layup_Count,	1,	3 )
+	ENDIF
+
+	IF ( layer_Count > 0) THEN
+		sys_allocate_array (layer_ID,					1,	layer_Count)			
+		sys_allocate_array (layer_Material_ID,			1,	layer_Count)		
+		sys_allocate_array (layer_Drop_Order,			1,	layer_Count)
+		sys_allocate_array (layer_Thickness,			1,	layer_Count)
+		sys_allocate_array (layer_Orientation,			1,	layer_Count)
+	ENDIF
+
 	######################################################
 	# Initialize Variables 
 	# This must be after the calls to sys_allocate_array
@@ -1369,7 +1415,6 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 
 		unknownFieldFound = FALSE
 		# use loopIncrement to protect from a runaway program 
-		WRITE ("MaxInputFileLength: " // str_from_integer(maxInputFileLength))
 		WHILE ( !unknownFieldFound &&  loopIncrement < maxInputFileLength && buffer != "" )
 			loopIncrement += 1
 			SWITCH ( buffer )
@@ -1412,6 +1457,9 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
 			   CASE(  c_LOAD )
 					PatranModel.readLoad_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
+			   CASE(  c_MATERIAL_LAYUP )
+					PatranModel.readMaterialLayup_NameValPairs(   @
 					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, lineNum, buffer)
 			   DEFAULT
 					addErrorMessage( @
@@ -1628,8 +1676,8 @@ FUNCTION logInMemoryFEAModelDefinition(in_logFile)
 
 	text_write_string( in_LogFile, "")
 	text_write_string( in_LogFile, c_LOAD) 	
-	text_write_string( in_LogFile, "   Count: " // str_from_integer(load_value_Count_temp))	
-	FOR (i = 1 TO load_value_Count_temp)
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(load_Count_temp))	
+	FOR (i = 1 TO load_Count_temp)
 			text_write_string( in_LogFile, "" )	
 			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(load_ID(i)) )
 			text_write_string( in_LogFile, "   " // c_TYPE 							// " = " // PatranModel.load_Type_toStr(load_Type(i)) )
@@ -1638,6 +1686,25 @@ FUNCTION logInMemoryFEAModelDefinition(in_logFile)
 			text_write_string( in_LogFile, "   " // c_LOAD_VALUE_ID 				// " = " // PatranModel.ID_toStr(load_Value_ID(i)) )
 	END FOR
 	
+
+	text_write_string( in_LogFile, "")
+	text_write_string( in_LogFile, c_MATERIAL_LAYUP) 	
+	text_write_string( in_LogFile, "   Count: " // str_from_integer(material_layup_Count_temp))	
+	FOR (i = 1 TO material_layup_Count_temp)
+			text_write_string( in_LogFile, "" )	
+			text_write_string( in_LogFile, "   " // c_ID 							// " = " // PatranModel.ID_toStr(material_layup_ID(i, 1)) )
+
+			IF ( PatranModel.ID_toStr(material_layup_ID(i, 2)) > 0 && PatranModel.ID_toStr(material_layup_ID(i, 3)) > 0 ) THEN
+				FOR ( i = material_layup_ID(i, 2) TO material_layup_ID(i, 3) )
+					text_write_string( in_LogFile, "      " // c_LAYER					// " = " // PatranModel.ID_toStr(layer_ID(i)) )
+					text_write_string( in_LogFile, "      " // c_MATERIAL_ID			// " = " // PatranModel.ID_toStr(layer_Material_ID(i)) )
+					text_write_string( in_LogFile, "      " // c_THICKNESS				// " = " // str_from_real(layer_Thickness(i)) )
+					text_write_string( in_LogFile, "      " // c_ORIENTATION			// " = " // str_from_real(layer_Orientation(i)) )
+					text_write_string( in_LogFile, "      " // c_DROP_ORDER			// " = " // str_from_integer(layer_Drop_Order(i)) )
+					text_write_string( in_LogFile, "")
+				END FOR
+			END IF
+	END FOR
 	
 END FUNCTION					
 ###############################################################################
@@ -3252,5 +3319,223 @@ FUNCTION readLoad_NameValPairs( 	modelFile,						@
 
 
 END FUNCTION
-###############################################################################			
+###############################################################################	
+FUNCTION readMaterialLayup_NameValPairs( 	modelFile,						@
+											in_ErrorMessages_maxCount,		@	
+											in_out_ErrorMessages_current,	@									
+											in_out_errorMessages,			@
+											in_out_LineNum,					@
+											in_out_Buffer)
+
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()	
+	INTEGER in_out_LineNum		
+	STRING	in_out_Buffer[]	
+
+	
+	STRING  functionName[64] = "readMaterialLayup_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+
+	STRING nameField[128]
+	STRING valueField[128]	
+	
+	material_layup_Count_temp += 1
+	LOGICAL hasLayer = FALSE
+
+	buffer = ""
+	WHILE ( equalsSignFound )	
+		INTEGER readStrStatus
+		readStrStatus = text_read_string( modelFile, buffer, length )
+		WRITE (" Function: " // functionName // " buffer: " // buffer) 
+		IF ( readStrStatus != 0 ) THEN
+			buffer = ""
+			IF (readStrStatus == -1) THEN
+				equalsSignFound = FALSE
+			END IF
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				equalsSignFound = FALSE	
+				
+				# Check if it's a Layer tag
+				WHILE ( buffer == c_Layer)
+					WRITE ("Found Layer Tag!")
+					PatranModel.readLayer_NameValPairs(   @
+					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, in_out_LineNum, buffer)
+
+					IF (material_layup_ID(material_layup_Count_temp, 2) == 0) THEN
+						material_layup_ID(material_layup_Count_temp, 2) = layer_Count_temp
+					END IF
+
+					material_layup_ID(material_layup_Count_temp, 3) = layer_Count_temp	
+
+				END WHILE	
+		
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  material_layup_ID(material_layup_Count_temp, 1) =  PatranModel.ID_toInt(valueField)
+					  material_layup_ID(material_layup_Count_temp, 2) = 0
+					  material_layup_ID(material_layup_Count_temp, 3) = 0
+					  IF (  material_layup_ID(material_layup_Count_temp, 1) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF 
+								    			
+											  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+
+				
+			END IF
+
+		END IF
+
+	END WHILE		
+
+
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+
+END FUNCTION
+
+###############################################################################		
+FUNCTION readLayer_NameValPairs( 	modelFile,						@
+									in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages,			@
+									in_out_LineNum,					@
+									in_out_Buffer)
+
+						
+	INTEGER modelFile
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()	
+	INTEGER in_out_LineNum		
+	STRING	in_out_Buffer[]	
+
+	
+	STRING  functionName[64] = "readLayer_NameValPairs"		
+
+	LOGICAL equalsSignFound = TRUE
+	LOGICAL	shouldContinue
+	STRING  buffer[2028]	
+	
+	INTEGER length	
+	INTEGER realStatus
+
+	STRING nameField[128]
+	STRING valueField[128]	
+
+	layer_Count_temp += 1
+	LOGICAL hasLayer = FALSE
+
+	buffer = ""
+
+	WHILE ( equalsSignFound )
+		INTEGER readStrStatus
+		readStrStatus = text_read_string( modelFile, buffer, length )
+		WRITE ( "Function: " // functionName // " buffer: " // buffer)
+		IF ( readStrStatus != 0 ) THEN
+			buffer = ""
+			IF (readStrStatus == -1) THEN
+				equalsSignFound = FALSE
+			END IF
+		ELSE
+			in_out_LineNum += 1
+			shouldContinue = FALSE			
+			
+			buffer = PatranModel.getBufferNoComments( buffer, shouldContinue, in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages, in_out_LineNum  )					
+			# shouldContinue == TRUE means that the line was blank or contained only a comment
+			If (shouldContinue ) THEN CONTINUE 
+			
+			IF ( str_index( buffer, "=" ) == 0 ) THEN
+				WRITE ( " Function: " // functionName // " buffer: " // buffer // " ++++ Can't find = ")
+				equalsSignFound = FALSE	
+			ELSE
+				nameField = str_token( buffer,"=", 1, TRUE )		
+				valueField = str_token( buffer,"=", 2, TRUE )
+				SWITCH ( nameField )					
+					CASE (c_ID)
+					  layer_ID(layer_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  layer_ID(layer_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 
+					  END IF  		    			
+							
+					CASE (c_MATERIAL_ID)
+					  layer_material_ID(layer_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  layer_material_ID(layer_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+					  END IF
+
+					 CASE (c_ORIENTATION)
+					  layer_Orientation(layer_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  layer_Orientation(layer_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+					  END IF	
+
+					  CASE (c_THICKNESS)
+					  layer_Thickness(layer_Count_temp) =  str_to_real(valueField, realStatus)
+					  IF (  layer_Thickness(layer_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+					  END IF	
+
+					  CASE (c_DROP_ORDER)
+					  layer_Drop_Order(layer_Count_temp) =  PatranModel.ID_toInt(valueField)
+					  IF (  layer_Drop_Order(layer_Count_temp) < 0 ) THEN
+							addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Could not convert to a positive non-zero integer, String: " // valueField // ", Line number: " // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+					  END IF	
+					   		  
+					DEFAULT
+						addErrorMessage( @
+								formatErrorMessage( c_ERROR, functionName, "Unexpected name-value pair: " // buffer // ", Line number: "  // str_from_integer(in_out_LineNum)), @
+									in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 						
+				END SWITCH	
+				
+			END IF
+
+		END IF
+
+
+	END WHILE
+
+	in_out_Buffer = buffer
+	
+	WRITE ( "Function: " // functionName  // ", Returned Buffer: " // buffer )	
+
+END FUNCTION
+
+###############################################################################	
 END CLASS
