@@ -539,6 +539,7 @@ FUNCTION  createModel( 	in_PatranInstall_Dir, 		@
 	
 	WRITE ("errorMessages_maxCount errorMessages_current: " // str_from_integer(errorMessages_maxCount) // " " //  str_from_integer(errorMessages_current))
 	
+
 	IF ( returnStatus == 0 ) THEN
 		INTEGER succeededFile = 0
 		text_open( "_SUCCEEDED.TXT", "NOWA", 0, 0, succeededFile )	
@@ -1478,6 +1479,12 @@ FUNCTION   readFEAModelDefinition (   	in_Working_Dir, 				@
 			formatErrorMessage( c_ERROR, functionName, "Exceeded maximum number of lines in input file, Line count: " // str_from_integer(loopIncrement) ), @
 			in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages)	
 	END IF 
+
+		
+	PatranModel.checkDataStructure( in_ErrorMessages_maxCount,		@	
+									in_out_ErrorMessages_current,	@									
+									in_out_errorMessages )
+
 	
 	IF ( in_out_ErrorMessages_current > 0 ) THEN
 		return -1
@@ -3347,13 +3354,11 @@ FUNCTION readMaterialLayup_NameValPairs( 	modelFile,						@
 	STRING valueField[128]	
 	
 	material_layup_Count_temp += 1
-	LOGICAL hasLayer = FALSE
 
 	buffer = ""
 	WHILE ( equalsSignFound )	
 		INTEGER readStrStatus
 		readStrStatus = text_read_string( modelFile, buffer, length )
-		WRITE (" Function: " // functionName // " buffer: " // buffer) 
 		IF ( readStrStatus != 0 ) THEN
 			buffer = ""
 			IF (readStrStatus == -1) THEN
@@ -3372,7 +3377,6 @@ FUNCTION readMaterialLayup_NameValPairs( 	modelFile,						@
 				
 				# Check if it's a Layer tag
 				WHILE ( buffer == c_Layer)
-					WRITE ("Found Layer Tag!")
 					PatranModel.readLayer_NameValPairs(   @
 					modelFile, in_ErrorMessages_maxCount, in_out_ErrorMessages_current,	in_out_errorMessages, in_out_LineNum, buffer)
 
@@ -3450,14 +3454,12 @@ FUNCTION readLayer_NameValPairs( 	modelFile,						@
 	STRING valueField[128]	
 
 	layer_Count_temp += 1
-	LOGICAL hasLayer = FALSE
 
 	buffer = ""
 
 	WHILE ( equalsSignFound )
 		INTEGER readStrStatus
 		readStrStatus = text_read_string( modelFile, buffer, length )
-		WRITE ( "Function: " // functionName // " buffer: " // buffer)
 		IF ( readStrStatus != 0 ) THEN
 			buffer = ""
 			IF (readStrStatus == -1) THEN
@@ -3472,7 +3474,6 @@ FUNCTION readLayer_NameValPairs( 	modelFile,						@
 			If (shouldContinue ) THEN CONTINUE 
 			
 			IF ( str_index( buffer, "=" ) == 0 ) THEN
-				WRITE ( " Function: " // functionName // " buffer: " // buffer // " ++++ Can't find = ")
 				equalsSignFound = FALSE	
 			ELSE
 				nameField = str_token( buffer,"=", 1, TRUE )		
@@ -3538,4 +3539,373 @@ FUNCTION readLayer_NameValPairs( 	modelFile,						@
 END FUNCTION
 
 ###############################################################################	
+
+#	*******************************
+#   Various Checker Functions
+#	*******************************
+
+###############################################################################	
+FUNCTION checkDataStructure (	in_ErrorMessages_maxCount,		@	
+								in_out_ErrorMessages_current,	@									
+								in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+
+	PatranModel.checkSubcase(	in_ErrorMessages_maxCount,		@
+								in_out_ErrorMessages_current,	@
+								in_out_errorMessages)
+
+	PatranModel.checkSolid(		in_ErrorMessages_maxCount,		@
+								in_out_ErrorMessages_current,	@
+								in_out_errorMessages)
+
+	PatranModel.checkLoad(		in_ErrorMessages_maxCount,		@
+								in_out_ErrorMessages_current,	@
+								in_out_errorMessages)
+
+	PatranModel.checkConstraint(	in_ErrorMessages_maxCount,		@
+									in_out_ErrorMessages_current,	@
+									in_out_errorMessages)
+
+	PatranModel.checkLayer(		in_ErrorMessages_maxCount,		@
+								in_out_ErrorMessages_current,	@
+								in_out_errorMessages)
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkSubcase(	in_ErrorMessages_maxCount,		@	
+						in_out_ErrorMessages_current,	@									
+						in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+		
+	STRING functionName[64] = "checkSubcase"
+	Integer i
+
+	FOR ( i = 1 TO subcase_Count_temp )
+		IF ( PatranModel.checkConstraint_HasID( subcase_Constraint_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Subcase ID: " // str_from_integer(subcase_ID(i)) // ", missing Constraint with ID: "  // str_from_integer(subcase_Constraint_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+		IF ( PatranModel.checkLoad_HasID( subcase_Load_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Subcase ID: " // str_from_integer(subcase_ID(i)) // ", missing Load with ID: "  // str_from_integer(subcase_Load_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+	END FOR
+
+END FUNCTION
+###############################################################################
+FUNCTION checkSolid (	in_ErrorMessages_maxCount,		@	
+						in_out_ErrorMessages_current,	@									
+						in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+		
+	STRING functionName[64] = "checkSolid"
+	Integer i
+
+	FOR ( i = 1 TO sol_Count_temp )
+		IF ( PatranModel.checkMaterial_HasID(sol_Mat_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Solid ID: " // str_from_integer(sol_ID(i)) // ", missing Material with ID: "  // str_from_integer(sol_Mat_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 				
+		END IF
+
+		IF ( PatranModel.checkMeshParameter_HasID(sol_Mesh_Params_ID(i))  == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Solid ID: " // str_from_integer(sol_ID(i)) // ", missing Mesh Parameter with ID: "  // str_from_integer(sol_Mesh_Params_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+	END FOR
+
+
+	INTEGER elementType = 0
+	IF ( sol_Count_temp > 0) THEN
+		elementType = sol_Element_Type(1)
+	END IF
+		
+	FOR ( i = 1 TO sol_Count_temp )
+		IF ( sol_Element_Type(i) != elementType ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "mixed element types: " // PatranModel.sol_Element_Type_toStr(sol_Element_Type(i)) // ", Solid ID: "  // str_from_integer(sol_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF	
+	END FOR
+
+
+	# uncomment when we can mix TETRA4 with TETRA8 and CQUAD4 with CQUAD8
+	#STRING elementType[64] = ""
+	#IF ( sol_Count_temp > 0) THEN
+	#	elementType = PatranModel.sol_Element_Type_toStr(sol_Element_Type(1))
+	#	IF ( str_index( elementType, "TETRA" ) == 0 ) THEN
+	#		elementType = "CQUAD"
+	#	END IF
+	#END IF
+	#FOR ( i = 1 TO sol_Count_temp )
+	#	IF ( str_index( PatranModel.sol_Element_Type_toStr(sol_Element_Type(i)) , elementType ) == 0 ) THEN
+	#		addErrorMessage( @
+	#				formatErrorMessage( c_ERROR, functionName, "mixed element types: " // PatranModel.sol_Element_Type_toStr(sol_Element_Type(i)) // ", Solid ID: "  // str_from_integer(sol_ID(i))), @
+	#						in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+	#	END IF
+	#END FOR
+
+
+
+END FUNCTION
+###############################################################################
+FUNCTION checkLoad (	in_ErrorMessages_maxCount,		@	
+						in_out_ErrorMessages_current,	@									
+						in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+
+	STRING functionName[64] = "checkLoad"
+	Integer i
+
+	FOR ( i = 1 TO load_Count_temp )
+		IF ( PatranModel.checkSubcase_HasID(load_SubCase_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Load ID: " // str_from_integer(load_ID(i)) // ", missing Subcase with ID: "  // str_from_integer(load_SubCase_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+		IF ( PatranModel.checkGeometry_HasID(load_Geometry_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Load ID: " // str_from_integer(load_ID(i)) // ", missing Geometry with ID: "  // str_from_integer(load_Geometry_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+		IF ( PatranModel.checkLoadValue_HasID(load_Load_Value_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Load ID: " // str_from_integer(load_ID(i)) // ", missing Load Value with ID: "  // str_from_integer(load_Load_Value_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+	END FOR
+
+END FUNCTION
+###############################################################################
+FUNCTION checkConstraint (	in_ErrorMessages_maxCount,		@	
+							in_out_ErrorMessages_current,	@									
+							in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+
+	STRING functionName[64] = "checkConstraint"
+	Integer i
+
+	FOR ( i = 1 TO constraint_Count_temp )
+		IF ( PatranModel.checkSubcase_HasID(constraint_SubCase_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Constraint ID: " // str_from_integer(load_ID(i)) // ", missing Subcase with ID: "  // str_from_integer(constraint_SubCase_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+		IF ( PatranModel.checkGeometry_HasID(constraint_Geometry_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Constraint ID: " // str_from_integer(load_ID(i)) // ", missing Geometry with ID: "  // str_from_integer(constraint_Geometry_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+
+		# only displacement is supported currently
+		IF ( PatranModel.checkDisplacement_HasID(constraint_Displacement_ID (i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Constraint ID: " // str_from_integer(load_ID(i)) // ", missing Diplacement with ID: "  // str_from_integer(constraint_Displacement_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+	END FOR
+
+END FUNCTION
+
+###############################################################################
+FUNCTION checkLayer (	in_ErrorMessages_maxCount,		@	
+						in_out_ErrorMessages_current,	@									
+						in_out_errorMessages)
+
+	INTEGER in_ErrorMessages_maxCount	
+	INTEGER in_out_ErrorMessages_current	
+	STRING 	in_out_errorMessages[]()
+
+	STRING functionName[64] = "checkLayer"
+	Integer i
+
+	FOR ( i = 1 TO layer_Count_temp )
+		IF ( PatranModel.checkMaterial_HasID(layer_Material_ID(i)) == FALSE ) THEN
+			addErrorMessage( @
+					formatErrorMessage( c_ERROR, functionName, "Layer ID: " // str_from_integer(load_ID(i)) // ", missing Material with ID: "  // str_from_integer(constraint_SubCase_ID(i))), @
+							in_ErrorMessages_maxCount, in_out_ErrorMessages_current, in_out_errorMessages ) 	
+		END IF
+	END FOR
+
+END FUNCTION
+
+###############################################################################
+FUNCTION checkConstraint_HasID( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkConstraint_HasID"
+	Integer i
+
+	FOR ( i = 1 TO constraint_Count_temp )
+		IF ( constraint_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkLoad_HasID( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkLoad_HasID"
+	Integer i
+
+	FOR ( i = 1 TO load_Count_temp )
+		IF ( load_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkMeshParameter_HasID( 		id_to_search)
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkMeshParameter_HasID"
+	Integer i
+
+	FOR ( i = 1 TO mesh_params_Count_temp )
+		IF ( mesh_params_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkMaterial_HasID( 		id_to_search)
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkMaterial_HasID"
+	Integer i
+
+	FOR ( i = 1 TO mat_Count_temp )
+		IF ( mat_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkSubcase_HasID ( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkSubcase_HasID"
+	Integer i
+
+	FOR ( i = 1 TO subcase_Count_temp )
+		IF ( subcase_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkGeometry_HasID ( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkGeometry_HasID"
+	Integer i
+
+	FOR ( i = 1 TO geometry_Count_temp )
+		IF ( geometry_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkLoadValue_HasID ( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkLoadValue_HasID"
+	Integer i
+
+	FOR ( i = 1 TO load_Value_Count_temp )
+		IF ( load_Value_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
+FUNCTION checkDisplacement_HasID ( id_to_search )
+
+	INTEGER	id_to_search
+	LOGICAL	result 
+	result = FALSE
+
+	STRING  functionName[64] = "checkDisplacement_HasID"
+	Integer i
+
+	FOR ( i = 1 TO disp_Count_temp )
+		IF ( disp_ID(i) == id_to_search ) THEN
+			result = TRUE
+			BREAK
+		END IF
+	END FOR
+	return result
+
+END FUNCTION
+###############################################################################	
 END CLASS
+ 
